@@ -159,6 +159,173 @@ class McpSessionManager {
     return this.connect(ip);
   }
 
+  // 커스텀 MCP SSE URL로 세션 연결 (ip는 세션 키로만 사용)
+  async getSessionByUrl(sessionKey, sseUrl) {
+    if (this.sessions.has(sessionKey)) {
+      const session = this.sessions.get(sessionKey);
+      if (session.initialized && session.sseUrlUsed === sseUrl) {
+        return session;
+      }
+      // URL이 바뀌었거나 초기화가 안된 경우 재연결
+      this.closeSession(sessionKey);
+    }
+    return this.connectByUrl(sessionKey, sseUrl);
+  }
+
+  connectByUrl(sessionKey, sseUrl) {
+    return new Promise((resolve, reject) => {
+      if (this.sessions.has(sessionKey)) {
+        this.closeSession(sessionKey);
+      }
+
+      console.log(`🔗 [MCP Manager] Connecting to custom SSE URL: ${sseUrl}`);
+
+      // MCP POST base URL 추출 (SSE URL에서 /sse 또는 경로 제거)
+      let mcpBaseUrl;
+      try {
+        const parsed = new URL(sseUrl);
+        mcpBaseUrl = `${parsed.protocol}//${parsed.host}`;
+      } catch {
+        mcpBaseUrl = `http://${sessionKey}:3000`;
+      }
+
+      const session = {
+        postEndpoint: '',
+        initialized: false,
+        sseReq: null,
+        sseRes: null,
+        step: 'init',
+        pendingRequests: new Map(),
+        sseUrlUsed: sseUrl,
+        mcpBaseUrl
+      };
+
+      this.sessions.set(sessionKey, session);
+
+      const req = http.get(sseUrl, {
+        headers: {
+          'Accept': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        }
+      }, (res) => {
+        session.sseRes = res;
+        let buffer = '';
+        let currentEvent = '';
+
+        res.on('data', (chunk) => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('event:')) {
+              currentEvent = trimmed.substring(6).trim();
+            } else if (trimmed.startsWith('data:')) {
+              const dataStr = trimmed.substring(5).trim();
+
+              if (currentEvent === 'endpoint') {
+                session.postEndpoint = dataStr;
+                console.log(`🎯 [MCP Manager] Caught MCP Post Endpoint: ${session.postEndpoint}`);
+                this.sendInitializeByUrl(sessionKey, session.postEndpoint, mcpBaseUrl);
+              } else if (currentEvent === 'message') {
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (session.step === 'init' && parsed.result && parsed.id === 1) {
+                    session.step = 'initialized';
+                    console.log('🔌 [MCP Manager] Initialize response received. Activating session...');
+                    this.sendInitializedNotificationByUrl(sessionKey, session.postEndpoint, mcpBaseUrl)
+                      .then(() => {
+                        session.initialized = true;
+                        console.log('✅ [MCP Manager] Custom URL Session fully handshaked and active.');
+                        resolve(session);
+                      })
+                      .catch(reject);
+                  } else if (parsed.id !== undefined && session.pendingRequests.has(parsed.id)) {
+                    console.log(`🎯 [MCP Manager] Found matching pending request for id: ${parsed.id}`);
+                    const pending = session.pendingRequests.get(parsed.id);
+                    clearTimeout(pending.timeout);
+                    session.pendingRequests.delete(parsed.id);
+                    if (parsed.error) {
+                      pending.reject(new Error(parsed.error.message || JSON.stringify(parsed.error)));
+                    } else {
+                      pending.resolve(parsed.result);
+                    }
+                  }
+                } catch (e) {
+                  console.error('[MCP Manager] SSE JSON parsing error:', e);
+                }
+              }
+            } else if (trimmed === '') {
+              currentEvent = '';
+            }
+          }
+        });
+
+        res.on('close', () => {
+          console.log(`🔴 [MCP Manager] SSE connection closed for ${sessionKey}`);
+          this.closeSession(sessionKey);
+        });
+
+        res.on('error', (err) => {
+          console.error(`❌ [MCP Manager] SSE error for ${sessionKey}:`, err.message);
+          this.closeSession(sessionKey);
+          reject(err);
+        });
+      });
+
+      session.sseReq = req;
+      req.on('error', (err) => {
+        console.error(`❌ [MCP Manager] SSE request error for ${sessionKey}:`, err.message);
+        this.closeSession(sessionKey);
+        reject(err);
+      });
+
+      setTimeout(() => {
+        if (!session.initialized) {
+          req.destroy();
+          this.closeSession(sessionKey);
+          reject(new Error(`Timeout waiting for MCP Handshake on ${sseUrl}`));
+        }
+      }, 6000);
+    });
+  }
+
+  sendInitializeByUrl(sessionKey, postEndpoint, mcpBaseUrl) {
+    const targetUrl = new URL(postEndpoint, mcpBaseUrl);
+    const payload = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'HuskyVisionClient', version: '1.0.0' } }
+    });
+    const req = http.request(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => { console.log(`📤 [MCP Manager] POST initialize (custom) status: ${res.statusCode}`); });
+    req.on('error', (err) => console.error('[MCP Manager] Initialize error:', err.message));
+    req.write(payload);
+    req.end();
+  }
+
+  sendInitializedNotificationByUrl(sessionKey, postEndpoint, mcpBaseUrl) {
+    return new Promise((resolve, reject) => {
+      const targetUrl = new URL(postEndpoint, mcpBaseUrl);
+      const payload = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+      const req = http.request(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+      }, (res) => {
+        console.log(`📤 [MCP Manager] POST initialized (custom) status: ${res.statusCode}`);
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+        else reject(new Error(`Failed initialized notification: HTTP ${res.statusCode}`));
+        res.resume();
+      });
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
   connect(ip) {
     return new Promise((resolve, reject) => {
       // Clean up previous connection if any
@@ -443,30 +610,29 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { body += chunk.toString(); });
     req.on('end', async () => {
       try {
-        const { targetIp, mode, parameter, commandType } = JSON.parse(body);
-        if (!targetIp) {
+        const { targetIp, mcpUrl, mode, parameter, commandType } = JSON.parse(body);
+        if (!targetIp && !mcpUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing targetIp parameter' }));
+          res.end(JSON.stringify({ error: 'Missing targetIp or mcpUrl parameter' }));
           return;
         }
 
-        // Bridge request to MCP protocol via persistent session
-        const session = await mcpManager.getSession(targetIp);
+        // mcpUrl이 있으면 커스텀 URL로 세션 연결, 없으면 IP 기반 기본값 사용
+        const sessionKey = targetIp || (mcpUrl ? (() => { try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; } })() : null);
+        const session = mcpUrl
+          ? await mcpManager.getSessionByUrl(sessionKey, mcpUrl)
+          : await mcpManager.getSession(sessionKey);
         let mcpResponse;
 
         if (commandType === 'learn') {
-          // Trigger multimedia learning or dynamic parameter
-          mcpResponse = await callMcpTool(targetIp, session, 'multimedia_control', {
+          mcpResponse = await callMcpTool(sessionKey, session, 'multimedia_control', {
             operation: 'take_photo',
             label: parameter || 'target'
           });
         } else {
-          // Map standard shorthand algorithm keys to exact official hardware names
           const mappedAlgorithm = ALGORITHM_MAP[mode] || mode;
           console.log(`🔄 Algorithm mode switch requested: "${mode}" mapped to "${mappedAlgorithm}"`);
-
-          // Switch vision algorithms on HuskyLens 2
-          mcpResponse = await callMcpTool(targetIp, session, 'manage_applications', {
+          mcpResponse = await callMcpTool(sessionKey, session, 'manage_applications', {
             operation: 'switch_application',
             algorithm: mappedAlgorithm
           });
@@ -490,16 +656,19 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { body += chunk.toString(); });
     req.on('end', async () => {
       try {
-        const { targetIp } = JSON.parse(body);
-        if (!targetIp) {
+        const { targetIp, mcpUrl } = JSON.parse(body);
+        if (!targetIp && !mcpUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing targetIp parameter' }));
+          res.end(JSON.stringify({ error: 'Missing targetIp or mcpUrl parameter' }));
           return;
         }
 
-        console.log(`🔍 [stream-broker] Fetching recognition result from HuskyLens 2 MCP at ${targetIp}...`);
-        const session = await mcpManager.getSession(targetIp);
-        const mcpResponse = await callMcpTool(targetIp, session, 'get_recognition_result', { operation: 'get_result' });
+        const sessionKey = targetIp || (mcpUrl ? (() => { try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; } })() : null);
+        console.log(`🔍 [stream-broker] Fetching recognition result from HuskyLens 2 MCP at ${sessionKey}...`);
+        const session = mcpUrl
+          ? await mcpManager.getSessionByUrl(sessionKey, mcpUrl)
+          : await mcpManager.getSession(sessionKey);
+        const mcpResponse = await callMcpTool(sessionKey, session, 'get_recognition_result', { operation: 'get_result' });
         
         console.log(`✅ [stream-broker] Raw Tool Response:`, JSON.stringify(mcpResponse));
         
@@ -563,16 +732,20 @@ const server = http.createServer(async (req, res) => {
 
   // Endpoint: Connectivity & Handshake Verification
   if (reqUrl.pathname === '/api/ping') {
-    const huskyIp = reqUrl.searchParams.get('ip');
+    // mcpUrl 파라미터로 커스텀 MCP 주소 전체를 받거나, ip 파라미터로 IP만 받음
+    const mcpUrl = reqUrl.searchParams.get('mcpUrl');
+    const huskyIp = mcpUrl ? (() => { try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; } })() : reqUrl.searchParams.get('ip');
     if (!huskyIp) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'IP is required' }));
+      res.end(JSON.stringify({ error: 'ip or mcpUrl is required' }));
       return;
     }
 
     try {
-      // Connect/Fetch persistent session
-      const session = await mcpManager.getSession(huskyIp);
+      // mcpUrl이 주어진 경우 커스텀 SSE URL로 세션 연결
+      const session = mcpUrl
+        ? await mcpManager.getSessionByUrl(huskyIp, mcpUrl)
+        : await mcpManager.getSession(huskyIp);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ online: true, postEndpoint: session.postEndpoint }));
     } catch (err) {
@@ -585,13 +758,15 @@ const server = http.createServer(async (req, res) => {
   // Endpoint: Dynamic streaming initiation (maps RTSP to go2rtc stream 'husky')
   if (reqUrl.pathname === '/api/stream/start') {
     const huskyIp = reqUrl.searchParams.get('ip');
-    if (!huskyIp) {
+    // rtsp 파라미터로 커스텀 RTSP URL 전체를 받거나, ip 기반 기본값 사용
+    const customRtsp = reqUrl.searchParams.get('rtsp');
+    if (!huskyIp && !customRtsp) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'IP is required' }));
+      res.end(JSON.stringify({ error: 'ip or rtsp parameter is required' }));
       return;
     }
 
-    const rtspUrl = `rtsp://${huskyIp}:8554/live`;
+    const rtspUrl = customRtsp || `rtsp://${huskyIp}:8554/live`;
     console.log(`🔄 Mapping RTSP stream in go2rtc: ${rtspUrl}`);
 
     // Call go2rtc HTTP API using PUT to dynamically map/update the RTSP source to "husky" stream
@@ -603,7 +778,7 @@ const server = http.createServer(async (req, res) => {
       resGo2rtc.on('end', () => {
         console.log(`📡 go2rtc Stream Map Response (${resGo2rtc.statusCode}): ${resBody}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, message: `RTSP stream mapped to go2rtc as 'husky'` }));
+        res.end(JSON.stringify({ success: true, message: `RTSP stream mapped to go2rtc as 'husky'`, rtspUrl }));
       });
     });
 

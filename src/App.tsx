@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Wifi,
   WifiOff,
@@ -12,6 +12,11 @@ import {
   MessageSquare,
   Eye,
   Zap,
+  Settings,
+  X,
+  CheckCircle,
+  AlertCircle,
+  Info,
 } from 'lucide-react';
 import { parseNaturalLanguageCommand } from './services/gemini';
 import {
@@ -46,44 +51,72 @@ interface DetectedObject {
   confidence: number;
 }
 
+// ─── localStorage 키 상수 ────────────────────────────────
+const LS_MCP_URL  = 'husky_mcp_url';
+const LS_RTSP_URL = 'husky_rtsp_url';
+const LS_IP       = 'husky_ip';
+
+// 기본값
+const DEFAULT_MCP_URL  = 'http://10.135.209.36:3000/sse';
+const DEFAULT_RTSP_URL = 'rtsp://10.135.209.36:8554/live';
+
 // ─── 메인 앱 ────────────────────────────────────────────────
 export default function App() {
-  const [huskyIp, setHuskyIp] = useState<string>(
-    () => localStorage.getItem('husky_ip') || '10.135.209.36'
+  // ── 연결 설정 상태 ──
+  const [mcpUrl, setMcpUrl] = useState<string>(
+    () => localStorage.getItem(LS_MCP_URL) || DEFAULT_MCP_URL
   );
+  const [rtspUrl, setRtspUrl] = useState<string>(
+    () => localStorage.getItem(LS_RTSP_URL) || DEFAULT_RTSP_URL
+  );
+  // 설정 모달 내 임시 편집값
+  const [draftMcpUrl, setDraftMcpUrl]   = useState<string>(mcpUrl);
+  const [draftRtspUrl, setDraftRtspUrl] = useState<string>(rtspUrl);
+
+  // IP는 mcpUrl에서 자동 추출 (하위 호환)
+  const huskyIp = (() => {
+    try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; }
+  })();
+
   const [connectionStatus, setConnectionStatus] = useState<
     'connected' | 'disconnected' | 'connecting'
   >('disconnected');
-  const [chatInput, setChatInput] = useState<string>('');
-  const [messages, setMessages] = useState<Message[]>([
+  const [chatInput, setChatInput]         = useState<string>('');
+  const [messages, setMessages]           = useState<Message[]>([
     {
       id: 'welcome',
       sender: 'assistant',
-      text: '안녕하세요! HuskyVision AI에 오신 것을 환영합니다. 스트리밍을 켜고 화면에 보이는 것을 자유롭게 물어보세요.',
+      text: '안녕하세요! HuskyVision AI에 오신 것을 환영합니다. ⚙️ 설정 버튼으로 MCP 주소와 RTSP 주소를 입력하고 연결하세요.',
       timestamp: new Date(),
     },
   ]);
   const [detectedObjects, setDetectedObjects] = useState<DetectedObject[]>([]);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [isListening, setIsListening]         = useState<boolean>(false);
+  const [isStreaming, setIsStreaming]           = useState<boolean>(false);
   const [showControlPanel, setShowControlPanel] = useState<boolean>(false);
+  const [showSettings, setShowSettings]         = useState<boolean>(false);
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef          = useRef<HTMLVideoElement | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
-  const recognitionRef = useRef<any | null>(null);
+  const chatBottomRef     = useRef<HTMLDivElement | null>(null);
+  const recognitionRef    = useRef<any | null>(null);
 
-  // IP 동기화
+  // ── localStorage 동기화 ──
   useEffect(() => {
-    localStorage.setItem('husky_ip', huskyIp);
-  }, [huskyIp]);
+    localStorage.setItem(LS_MCP_URL, mcpUrl);
+    localStorage.setItem(LS_IP, huskyIp);
+  }, [mcpUrl, huskyIp]);
 
-  // 채팅 스크롤
+  useEffect(() => {
+    localStorage.setItem(LS_RTSP_URL, rtspUrl);
+  }, [rtspUrl]);
+
+  // ── 채팅 스크롤 ──
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 음성인식 초기화
+  // ── 음성인식 초기화 ──
   useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -93,7 +126,7 @@ export default function App() {
       rec.lang = 'ko-KR';
       rec.interimResults = false;
       rec.onstart = () => setIsListening(true);
-      rec.onend = () => setIsListening(false);
+      rec.onend   = () => setIsListening(false);
       rec.onresult = async (event: any) => {
         const transcript = event.results[0][0].transcript;
         setChatInput(transcript);
@@ -103,32 +136,42 @@ export default function App() {
     }
   }, []);
 
-  // 연결 확인
+  // ── 최초 연결 시도 ──
   useEffect(() => {
-    checkConnection(huskyIp);
+    checkConnection();
   }, []);
 
-  const checkConnection = async (targetIp: string) => {
+  // ─── 연결 확인 ────────────────────────────────────────────
+  const checkConnection = async () => {
     setConnectionStatus('connecting');
     try {
       const response = await fetch(
-        `http://localhost:9999/api/ping?ip=${targetIp}`
+        `http://localhost:9999/api/ping?mcpUrl=${encodeURIComponent(mcpUrl)}`
       );
       const data = await response.json();
       if (data.online) {
         setConnectionStatus('connected');
-        addSystemMessage(`🔌 허스키렌즈2(${targetIp}) 연동 완료`);
+        addSystemMessage(`🔌 MCP 연결 성공 (${mcpUrl})`);
       } else {
         setConnectionStatus('disconnected');
-        addSystemMessage(`❌ 연결 실패: IP(${targetIp})를 확인하세요.`);
+        addSystemMessage(`❌ 연결 실패: ${data.error || 'MCP 서버에 응답이 없습니다.'}`);
       }
     } catch {
       setConnectionStatus('disconnected');
-      addSystemMessage('❌ 로컬 중계 서버가 실행 중이지 않습니다.');
+      addSystemMessage('❌ 로컬 중계 서버(stream-broker)가 실행 중이지 않습니다.');
     }
   };
 
-  // 스트리밍 시작
+  // ─── 설정 저장 ────────────────────────────────────────────
+  const applySettings = () => {
+    setMcpUrl(draftMcpUrl.trim());
+    setRtspUrl(draftRtspUrl.trim());
+    setShowSettings(false);
+    // 새 주소로 즉시 재연결
+    setTimeout(() => checkConnection(), 100);
+  };
+
+  // ─── 스트리밍 시작 ────────────────────────────────────────
   const startStreaming = async () => {
     if (connectionStatus !== 'connected') {
       addSystemMessage('⚠️ 먼저 허스키렌즈2와 연결하세요.');
@@ -136,9 +179,10 @@ export default function App() {
     }
     setIsStreaming(true);
     try {
-      addSystemMessage('📹 RTSP 스트림을 매핑하고 있습니다...');
+      addSystemMessage(`📹 RTSP 스트림 매핑 중: ${rtspUrl}`);
+      // rtsp 파라미터로 커스텀 RTSP URL 전달
       const mapRes = await fetch(
-        `http://localhost:9999/api/stream/start?ip=${huskyIp}`
+        `http://localhost:9999/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
       );
       if (!mapRes.ok) throw new Error('RTSP 스트림 매핑 실패');
 
@@ -149,8 +193,7 @@ export default function App() {
       peerConnectionRef.current = pc;
 
       pc.ontrack = (event) => {
-        if (videoRef.current)
-          videoRef.current.srcObject = event.streams[0];
+        if (videoRef.current) videoRef.current.srcObject = event.streams[0];
       };
       pc.oniceconnectionstatechange = () => {
         if (
@@ -179,21 +222,14 @@ export default function App() {
           const errData = await signalingRes.json();
           errDetails = errData.error || '';
         } catch {
-          try {
-            errDetails = await signalingRes.text();
-          } catch { /* empty */ }
+          try { errDetails = await signalingRes.text(); } catch { /* empty */ }
         }
-        if (
-          errDetails.toLowerCase().includes('refused') ||
-          errDetails.includes('8554')
-        ) {
+        if (errDetails.toLowerCase().includes('refused') || errDetails.includes('8554')) {
           throw new Error(
             '허스키렌즈2 기기에서 [Video Streaming] → RTSP Streaming을 ON으로 켜주세요.'
           );
         }
-        throw new Error(
-          errDetails || `SDP 협상 실패 (${signalingRes.status})`
-        );
+        throw new Error(errDetails || `SDP 협상 실패 (${signalingRes.status})`);
       }
 
       const answerSdp = await signalingRes.text();
@@ -219,12 +255,7 @@ export default function App() {
   const addSystemMessage = (text: string) => {
     setMessages((prev) => [
       ...prev,
-      {
-        id: Math.random().toString(),
-        sender: 'system',
-        text,
-        timestamp: new Date(),
-      },
+      { id: Math.random().toString(), sender: 'system', text, timestamp: new Date() },
     ]);
   };
 
@@ -250,17 +281,14 @@ export default function App() {
     setMessages((prev) => [...prev, userMsg]);
     if (!customText) setChatInput('');
 
-    // 실시간 인식 결과 가져오기
+    // 실시간 인식 결과
     let visionContext = '';
     try {
-      const recResponse = await fetch(
-        'http://localhost:9999/api/recognition',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetIp: huskyIp }),
-        }
-      );
+      const recResponse = await fetch('http://localhost:9999/api/recognition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetIp: huskyIp, mcpUrl }),
+      });
       const recResult = await recResponse.json();
 
       if (recResult.success && recResult.data) {
@@ -272,7 +300,7 @@ export default function App() {
           );
           visionContext = `감지된 객체 ${blocks.length}개: ${descriptions.join(', ')}`;
 
-          const camWidth = 1920;
+          const camWidth  = 1920;
           const camHeight = 1080;
           const mapped = blocks.map((b: any, idx: number) => {
             const wPercent = (b.width / camWidth) * 100;
@@ -304,11 +332,7 @@ export default function App() {
 
     // Gemini 호출
     try {
-      const result = await parseNaturalLanguageCommand(
-        textToSend,
-        visionContext
-      );
-
+      const result = await parseNaturalLanguageCommand(textToSend, visionContext);
       const assistantText = result.assistantResponse || '명령을 처리했습니다.';
 
       if (result.functionName === 'changeHuskyLensMode' && result.args?.mode) {
@@ -317,52 +341,39 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             targetIp: huskyIp,
+            mcpUrl,
             mode: result.args.mode,
             commandType: 'changeMode',
           }),
         });
         const data = await response.json();
-        if (data.success) {
-          addSystemMessage(`⚙️ 모드 전환 완료`);
-        }
+        if (data.success) addSystemMessage('⚙️ 모드 전환 완료');
       }
 
       setMessages((prev) => [
         ...prev,
-        {
-          id: Math.random().toString(),
-          sender: 'assistant',
-          text: assistantText,
-          timestamp: new Date(),
-        },
+        { id: Math.random().toString(), sender: 'assistant', text: assistantText, timestamp: new Date() },
       ]);
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,
-        {
-          id: Math.random().toString(),
-          sender: 'assistant',
-          text: `처리 실패: ${err.message}`,
-          timestamp: new Date(),
-        },
+        { id: Math.random().toString(), sender: 'assistant', text: `처리 실패: ${err.message}`, timestamp: new Date() },
       ]);
     }
   };
 
-  // ─── 연결 상태 색상 ──────────────────────────────────────
+  // ─── 연결 상태 스타일 ──────────────────────────────────────
   const statusColor =
-    connectionStatus === 'connected'
-      ? 'text-emerald-400'
-      : connectionStatus === 'connecting'
-      ? 'text-amber-400'
-      : 'text-slate-500';
+    connectionStatus === 'connected'   ? 'text-emerald-400' :
+    connectionStatus === 'connecting'  ? 'text-amber-400'   : 'text-slate-500';
 
   const statusDot =
-    connectionStatus === 'connected'
-      ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
-      : connectionStatus === 'connecting'
-      ? 'bg-amber-400 animate-pulse'
-      : 'bg-slate-600';
+    connectionStatus === 'connected'   ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' :
+    connectionStatus === 'connecting'  ? 'bg-amber-400 animate-pulse'                             : 'bg-slate-600';
+
+  const statusLabel =
+    connectionStatus === 'connected'   ? '연결됨' :
+    connectionStatus === 'connecting'  ? '연결중...' : '미연결';
 
   // ─── 렌더 ────────────────────────────────────────────────
   return (
@@ -385,19 +396,21 @@ export default function App() {
           </span>
         </div>
 
-        {/* 연결 컨트롤 */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-white/[0.04] border border-white/[0.08] rounded-full px-3 py-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
-            <input
-              type="text"
-              value={huskyIp}
-              onChange={(e) => setHuskyIp(e.target.value)}
-              className="bg-transparent text-xs font-mono text-violet-300 outline-none w-28 border-none"
-            />
+        {/* 연결 상태 + 버튼 그룹 */}
+        <div className="flex items-center gap-2">
+          {/* 현재 연결 상태 칩 */}
+          <div className="hidden md:flex items-center gap-2 bg-white/[0.04] border border-white/[0.08] rounded-full px-3 py-1.5">
+            <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDot}`} />
+            <span className={`text-xs font-mono truncate max-w-[160px] ${statusColor}`}
+              title={mcpUrl}>
+              {huskyIp}
+            </span>
+            <span className={`text-[10px] font-semibold ${statusColor}`}>{statusLabel}</span>
           </div>
+
+          {/* 연결 버튼 */}
           <button
-            onClick={() => checkConnection(huskyIp)}
+            onClick={checkConnection}
             className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
               connectionStatus === 'connected'
                 ? 'border-emerald-500/40 text-emerald-400 bg-emerald-950/30'
@@ -411,39 +424,49 @@ export default function App() {
               </span>
             ) : connectionStatus === 'connected' ? (
               <span className="flex items-center gap-1.5">
-                <Wifi className="w-3 h-3" /> 연결됨
+                <Wifi className="w-3 h-3" />재연결
               </span>
             ) : (
               <span className="flex items-center gap-1.5">
-                <WifiOff className="w-3 h-3" /> 연결
+                <WifiOff className="w-3 h-3" />연결
               </span>
             )}
           </button>
 
+          {/* ⚙️ 기기 설정 버튼 */}
           <button
-            onClick={() => setShowControlPanel(!showControlPanel)}
+            onClick={() => {
+              setDraftMcpUrl(mcpUrl);
+              setDraftRtspUrl(rtspUrl);
+              setShowSettings(true);
+            }}
             className="text-xs font-semibold px-3 py-1.5 rounded-full border border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03] transition-all cursor-pointer flex items-center gap-1.5"
           >
-            <MessageSquare className="w-3 h-3" />
-            AI 채팅
+            <Settings className="w-3 h-3" />기기 설정
+          </button>
+
+          {/* 💬 AI 채팅 버튼 */}
+          <button
+            onClick={() => setShowControlPanel(true)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-full border border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03] transition-all cursor-pointer flex items-center gap-1.5"
+          >
+            <MessageSquare className="w-3 h-3" />AI 채팅
           </button>
         </div>
       </motion.nav>
 
       {/* ── 히어로 스크롤 섹션 ── */}
       <ContainerScroll
-        style={{
-          background: 'linear-gradient(180deg, #000000 0%, #09050f 40%, #0d0620 100%)',
-        }}
+        style={{ background: 'linear-gradient(180deg, #000000 0%, #09050f 40%, #0d0620 100%)' }}
         className="pt-20 text-center text-white"
       >
-        {/* 배경 그로우 효과 */}
+        {/* 배경 글로우 */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-violet-600/10 blur-[120px] rounded-full" />
           <div className="absolute top-1/3 left-1/3 w-[300px] h-[200px] bg-indigo-600/8 blur-[100px] rounded-full" />
         </div>
 
-        {/* 히어로 텍스트 애니메이션 */}
+        {/* 히어로 텍스트 */}
         <ContainerStagger className="relative z-10 px-6 pb-10">
           <ContainerAnimated animation="top">
             <div className="inline-flex items-center gap-2 bg-violet-600/10 border border-violet-500/20 text-violet-300 text-xs font-semibold px-4 py-1.5 rounded-full mb-6 mx-auto">
@@ -463,7 +486,8 @@ export default function App() {
 
           <ContainerAnimated animation="blur" className="my-6">
             <p className="text-lg md:text-xl text-slate-400 leading-relaxed max-w-xl mx-auto">
-              허스키렌즈2의 카메라를 <span className="text-violet-300 font-semibold">WebRTC 초저지연</span>으로
+              허스키렌즈2의 카메라를{' '}
+              <span className="text-violet-300 font-semibold">WebRTC 초저지연</span>으로
               무선 스트리밍하고,{' '}
               <span className="text-violet-300 font-semibold">Gemini AI</span>가
               화면의 모든 것을 분석합니다.
@@ -476,24 +500,21 @@ export default function App() {
                 onClick={startStreaming}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-violet-600 hover:bg-violet-500 text-white font-semibold text-sm transition-all shadow-[0_0_30px_rgba(139,92,246,0.4)] hover:shadow-[0_0_40px_rgba(139,92,246,0.6)] active:scale-95 cursor-pointer"
               >
-                <Play className="w-4 h-4" />
-                스트리밍 시작
+                <Play className="w-4 h-4" />스트리밍 시작
               </button>
             ) : (
               <button
                 onClick={stopStreaming}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-red-600/80 hover:bg-red-500 text-white font-semibold text-sm transition-all active:scale-95 cursor-pointer"
               >
-                <Square className="w-4 h-4" />
-                스트리밍 중단
+                <Square className="w-4 h-4" />스트리밍 중단
               </button>
             )}
             <button
               onClick={() => setShowControlPanel(true)}
               className="inline-flex items-center gap-2 px-6 py-3 rounded-full border border-white/15 hover:border-violet-500/50 text-slate-200 hover:text-violet-300 font-semibold text-sm transition-all active:scale-95 cursor-pointer"
             >
-              <Sparkles className="w-4 h-4" />
-              AI와 대화하기
+              <Sparkles className="w-4 h-4" />AI와 대화하기
             </button>
           </ContainerAnimated>
 
@@ -501,7 +522,11 @@ export default function App() {
           <ContainerAnimated animation="blur" className="mt-6 flex justify-center gap-4 flex-wrap text-xs">
             <span className={`flex items-center gap-1.5 font-semibold ${statusColor}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
-              {connectionStatus === 'connected' ? '허스키렌즈2 연결됨' : connectionStatus === 'connecting' ? '연결 중...' : '오프라인'}
+              {connectionStatus === 'connected'
+                ? `${huskyIp} 연결됨`
+                : connectionStatus === 'connecting'
+                ? '연결 중...'
+                : '오프라인'}
             </span>
             {isStreaming && (
               <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
@@ -519,7 +544,6 @@ export default function App() {
           roundednessRange={[800, 12]}
           className="mx-4 md:mx-10 shadow-[0_40px_120px_rgba(0,0,0,0.8)]"
         >
-          {/* 비디오 레이어 */}
           <div className="relative w-full bg-[#030208] aspect-video">
             <video
               ref={videoRef}
@@ -541,27 +565,25 @@ export default function App() {
                 </div>
                 <p className="text-slate-400 font-semibold text-sm">RTSP · WebRTC 스트리밍 대기 중</p>
                 <p className="text-slate-600 text-xs mt-1">스트리밍 시작 버튼을 눌러 화면을 켜세요</p>
-                {/* 그리드 오버레이 */}
-                <div className="absolute inset-0 opacity-[0.03]" style={{
-                  backgroundImage: 'linear-gradient(rgba(139,92,246,1) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,1) 1px, transparent 1px)',
-                  backgroundSize: '40px 40px',
-                }} />
+                <div
+                  className="absolute inset-0 opacity-[0.03]"
+                  style={{
+                    backgroundImage:
+                      'linear-gradient(rgba(139,92,246,1) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,1) 1px, transparent 1px)',
+                    backgroundSize: '40px 40px',
+                  }}
+                />
               </div>
             )}
 
-            {/* 바운딩 박스 오버레이 */}
+            {/* 바운딩 박스 */}
             {isStreaming && (
               <div className="absolute inset-0 pointer-events-none z-20">
                 {detectedObjects.map((obj) => (
                   <div
                     key={obj.id}
                     className="absolute border border-violet-500/80 bg-violet-500/[0.04] transition-all duration-300"
-                    style={{
-                      left: `${obj.x}%`,
-                      top: `${obj.y}%`,
-                      width: `${obj.width}%`,
-                      height: `${obj.height}%`,
-                    }}
+                    style={{ left: `${obj.x}%`, top: `${obj.y}%`, width: `${obj.width}%`, height: `${obj.height}%` }}
                   >
                     <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-violet-400 -mt-px -ml-px" />
                     <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-violet-400 -mt-px -mr-px" />
@@ -586,7 +608,7 @@ export default function App() {
         </ContainerInset>
       </ContainerScroll>
 
-      {/* ── 하단 섹션: 스크롤 후 펼쳐지는 기능 소개 ── */}
+      {/* ── 하단 기능 소개 섹션 ── */}
       <section className="bg-black py-20 px-6">
         <div className="max-w-5xl mx-auto">
           <motion.div
@@ -647,131 +669,266 @@ export default function App() {
         </div>
       </section>
 
-      {/* ── AI 채팅 패널 (슬라이드 오버레이) ── */}
-      {showControlPanel && (
-        <motion.div
-          initial={{ opacity: 0, x: 400 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: 400 }}
-          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-          className="fixed right-0 top-0 bottom-0 w-full max-w-sm z-[100] flex flex-col bg-[#08050f]/95 backdrop-blur-2xl border-l border-white/[0.06] shadow-[-40px_0_80px_rgba(0,0,0,0.7)]"
-        >
-          {/* 패널 헤더 */}
-          <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
-            <div className="flex items-center gap-2">
-              <div className="p-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30">
-                <Sparkles className="w-3.5 h-3.5 text-violet-400" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-white">Gemini AI 비전 비서</p>
-                <p className="text-[10px] text-slate-500">gemini-3.1-flash-lite</p>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowControlPanel(false)}
-              className="text-slate-500 hover:text-white transition-colors text-lg leading-none cursor-pointer"
+      {/* ════════════════════════════════════════════════════════
+          ── 기기 설정 모달 ──
+          ════════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showSettings && (
+          <>
+            {/* 배경 오버레이 */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] cursor-pointer"
+              onClick={() => setShowSettings(false)}
+            />
+
+            {/* 모달 */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.92, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.92, y: 20 }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed inset-0 flex items-center justify-center z-[111] pointer-events-none px-4"
             >
-              ×
-            </button>
-          </div>
+              <div className="pointer-events-auto w-full max-w-md bg-[#0c0918]/95 backdrop-blur-2xl border border-white/[0.08] rounded-2xl shadow-[0_40px_100px_rgba(0,0,0,0.8)] overflow-hidden">
 
-          {/* 메시지 영역 */}
-          <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-3">
-            {messages.map((msg) => {
-              if (msg.sender === 'system') {
-                return (
-                  <div key={msg.id} className="text-center my-0.5">
-                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-medium bg-white/[0.03] text-slate-500 border border-white/[0.05]">
-                      {msg.text}
-                    </span>
-                  </div>
-                );
-              }
-              const isUser = msg.sender === 'user';
-              return (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col max-w-[85%] ${isUser ? 'self-end items-end' : 'self-start items-start'}`}
-                >
-                  <div
-                    className={`p-3 rounded-xl text-xs leading-relaxed ${
-                      isUser
-                        ? 'bg-violet-600/20 border border-violet-500/30 text-violet-100 rounded-tr-none'
-                        : 'bg-white/[0.04] border border-white/[0.07] text-slate-200 rounded-tl-none'
-                    }`}
-                  >
-                    {msg.text}
-                  </div>
-                  <span className="text-[9px] text-slate-600 mt-1 px-1">
-                    {msg.timestamp.toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                </div>
-              );
-            })}
-            <div ref={chatBottomRef} />
-          </div>
-
-          {/* 입력 바 */}
-          <div className="p-3 border-t border-white/[0.06]">
-            <div className="flex items-center gap-2 bg-white/[0.03] border border-white/[0.07] rounded-xl p-1.5 focus-within:border-violet-500/40 transition-all">
-              <div className="relative">
-                {isListening && (
-                  <div className="absolute inset-0 rounded-lg bg-violet-600/20 animate-ping pointer-events-none" />
-                )}
-                <button
-                  onClick={toggleListening}
-                  className={`p-2 rounded-lg transition-all relative z-10 cursor-pointer ${
-                    isListening
-                      ? 'bg-violet-600/30 text-white border border-violet-500/50'
-                      : 'text-slate-500 hover:text-violet-300'
-                  }`}
-                >
-                  {isListening ? (
-                    <div className="flex items-center gap-0.5 w-4 h-4">
-                      <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.1s]" />
-                      <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.2s]" />
-                      <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.3s]" />
+                {/* 모달 헤더 */}
+                <div className="flex items-center justify-between p-5 border-b border-white/[0.06]">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30">
+                      <Settings className="w-4 h-4 text-violet-400" />
                     </div>
-                  ) : (
-                    <Mic className="w-4 h-4" />
-                  )}
+                    <div>
+                      <p className="text-sm font-bold text-white">기기 연결 설정</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">MCP 주소와 RTSP 주소를 입력하세요</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowSettings(false)}
+                    className="text-slate-500 hover:text-white transition-colors cursor-pointer p-1"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* 모달 바디 */}
+                <div className="p-5 space-y-5">
+
+                  {/* MCP 주소 입력 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-2">
+                      MCP 서버 주소 (SSE)
+                    </label>
+                    <input
+                      type="text"
+                      value={draftMcpUrl}
+                      onChange={(e) => setDraftMcpUrl(e.target.value)}
+                      placeholder="http://192.168.x.x:3000/sse"
+                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                    />
+                    <div className="flex items-start gap-1.5 mt-2">
+                      <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                      <p className="text-[10px] text-slate-600 leading-relaxed">
+                        허스키렌즈2가 연결된 Wi-Fi IP와 포트를 입력하세요.<br />
+                        기본 형식: <span className="text-slate-500 font-mono">http://&lt;IP&gt;:3000/sse</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* RTSP 주소 입력 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-2">
+                      RTSP 스트림 주소
+                    </label>
+                    <input
+                      type="text"
+                      value={draftRtspUrl}
+                      onChange={(e) => setDraftRtspUrl(e.target.value)}
+                      placeholder="rtsp://192.168.x.x:8554/live"
+                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                    />
+                    <div className="flex items-start gap-1.5 mt-2">
+                      <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                      <p className="text-[10px] text-slate-600 leading-relaxed">
+                        기기 메뉴 → Video Streaming → RTSP Streaming이 ON이어야 합니다.<br />
+                        기본 형식: <span className="text-slate-500 font-mono">rtsp://&lt;IP&gt;:8554/live</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 현재 연결 상태 표시 */}
+                  <div className={`flex items-center gap-2.5 p-3 rounded-xl border ${
+                    connectionStatus === 'connected'
+                      ? 'bg-emerald-950/30 border-emerald-800/40'
+                      : 'bg-white/[0.02] border-white/[0.06]'
+                  }`}>
+                    {connectionStatus === 'connected' ? (
+                      <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    )}
+                    <div>
+                      <p className={`text-xs font-semibold ${
+                        connectionStatus === 'connected' ? 'text-emerald-300' : 'text-slate-400'
+                      }`}>
+                        {connectionStatus === 'connected' ? '현재 연결됨' : connectionStatus === 'connecting' ? '연결 시도 중...' : '미연결 상태'}
+                      </p>
+                      <p className="text-[10px] text-slate-600 font-mono truncate max-w-[300px]"
+                        title={mcpUrl}>
+                        {mcpUrl}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 모달 푸터 */}
+                <div className="flex items-center gap-2.5 px-5 pb-5">
+                  <button
+                    onClick={() => setShowSettings(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-white/[0.08] text-slate-400 text-sm font-semibold hover:bg-white/[0.04] transition-all cursor-pointer"
+                  >
+                    취소
+                  </button>
+                  <button
+                    onClick={applySettings}
+                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-all shadow-[0_0_20px_rgba(139,92,246,0.3)] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Wifi className="w-3.5 h-3.5" />
+                    저장 후 연결
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ════════════════════════════════════════════════════════
+          ── AI 채팅 패널 ──
+          ════════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showControlPanel && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/40 z-[99] cursor-pointer"
+              onClick={() => setShowControlPanel(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, x: 400 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 400 }}
+              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed right-0 top-0 bottom-0 w-full max-w-sm z-[100] flex flex-col bg-[#08050f]/95 backdrop-blur-2xl border-l border-white/[0.06] shadow-[-40px_0_80px_rgba(0,0,0,0.7)]"
+            >
+              {/* 패널 헤더 */}
+              <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30">
+                    <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-white">Gemini AI 비전 비서</p>
+                    <p className="text-[10px] text-slate-500">gemini-3.1-flash-lite · {huskyIp}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowControlPanel(false)}
+                  className="text-slate-500 hover:text-white transition-colors cursor-pointer p-1"
+                >
+                  <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder={isListening ? '음성 인식 중...' : '화면에 보이는 게 뭐야?'}
-                className="flex-1 bg-transparent text-xs text-slate-200 outline-none placeholder-slate-600 border-none"
-                disabled={isListening}
-              />
+              {/* 메시지 영역 */}
+              <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-3">
+                {messages.map((msg) => {
+                  if (msg.sender === 'system') {
+                    return (
+                      <div key={msg.id} className="text-center my-0.5">
+                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[9px] font-medium bg-white/[0.03] text-slate-500 border border-white/[0.05]">
+                          {msg.text}
+                        </span>
+                      </div>
+                    );
+                  }
+                  const isUser = msg.sender === 'user';
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex flex-col max-w-[85%] ${isUser ? 'self-end items-end' : 'self-start items-start'}`}
+                    >
+                      <div
+                        className={`p-3 rounded-xl text-xs leading-relaxed ${
+                          isUser
+                            ? 'bg-violet-600/20 border border-violet-500/30 text-violet-100 rounded-tr-none'
+                            : 'bg-white/[0.04] border border-white/[0.07] text-slate-200 rounded-tl-none'
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+                      <span className="text-[9px] text-slate-600 mt-1 px-1">
+                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  );
+                })}
+                <div ref={chatBottomRef} />
+              </div>
 
-              <button
-                onClick={() => handleSendMessage()}
-                className="p-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white transition-all active:scale-95 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </motion.div>
-      )}
+              {/* 입력 바 */}
+              <div className="p-3 border-t border-white/[0.06]">
+                <div className="flex items-center gap-2 bg-white/[0.03] border border-white/[0.07] rounded-xl p-1.5 focus-within:border-violet-500/40 transition-all">
+                  <div className="relative">
+                    {isListening && (
+                      <div className="absolute inset-0 rounded-lg bg-violet-600/20 animate-ping pointer-events-none" />
+                    )}
+                    <button
+                      onClick={toggleListening}
+                      className={`p-2 rounded-lg transition-all relative z-10 cursor-pointer ${
+                        isListening
+                          ? 'bg-violet-600/30 text-white border border-violet-500/50'
+                          : 'text-slate-500 hover:text-violet-300'
+                      }`}
+                    >
+                      {isListening ? (
+                        <div className="flex items-center gap-0.5 w-4 h-4">
+                          <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.1s]" />
+                          <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.2s]" />
+                          <span className="w-0.5 h-3 bg-white animate-bounce [animation-delay:0.3s]" />
+                        </div>
+                      ) : (
+                        <Mic className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
 
-      {/* 패널 열릴 때 배경 오버레이 */}
-      {showControlPanel && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-black/40 z-[99] cursor-pointer"
-          onClick={() => setShowControlPanel(false)}
-        />
-      )}
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                    placeholder={isListening ? '음성 인식 중...' : '화면에 보이는 게 뭐야?'}
+                    className="flex-1 bg-transparent text-xs text-slate-200 outline-none placeholder-slate-600 border-none"
+                    disabled={isListening}
+                  />
+
+                  <button
+                    onClick={() => handleSendMessage()}
+                    className="p-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white transition-all active:scale-95 cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
