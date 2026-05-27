@@ -87,8 +87,8 @@ export default function App() {
   );
 
   // ── 스트리밍 우회 타입 상태 ──
-  // 'video' = RTCPeerConnection (기본), 'iframe' = go2rtc webrtc.html 임베딩, 'mjpeg' = go2rtc stream.mjpeg 이미지
-  const [streamType, setStreamType] = useState<'video' | 'iframe' | 'mjpeg'>('video');
+  // 'video' = RTCPeerConnection (기본), 'popup' = 기기 순정 뷰어 새 창 팝업 (CORS 우회 최종 수단)
+  const [streamType, setStreamType] = useState<'video' | 'popup'>('video');
 
   // 설정 모달 내 임시 편집값
   const [draftMcpUrl, setDraftMcpUrl]   = useState<string>(mcpUrl);
@@ -102,54 +102,6 @@ export default function App() {
     try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; }
   })();
 
-  // ── CORS 우회 URL 가공 헬퍼 함수 ──
-  const getIframeUrl = (signalingUrl: string) => {
-    try {
-      let target = signalingUrl.trim();
-      if (!target.startsWith('http://') && !target.startsWith('https://')) {
-        target = 'http://' + target;
-      }
-      const url = new URL(target);
-      if (!url.port && !target.includes(':80') && !target.includes(':1984') && !target.includes(':3000')) {
-        url.port = '1984';
-      }
-      if (url.pathname.includes('/api/webrtc')) {
-        url.pathname = url.pathname.replace('/api/webrtc', '/webrtc.html');
-      } else if (url.pathname === '/' || url.pathname === '') {
-        url.pathname = '/webrtc.html';
-      }
-      if (!url.searchParams.get('src')) {
-        url.searchParams.set('src', 'camera');
-      }
-      return url.toString();
-    } catch {
-      return `http://${huskyIp}:1984/webrtc.html?src=camera`;
-    }
-  };
-
-  const getMjpegUrl = (signalingUrl: string) => {
-    try {
-      let target = signalingUrl.trim();
-      if (!target.startsWith('http://') && !target.startsWith('https://')) {
-        target = 'http://' + target;
-      }
-      const url = new URL(target);
-      if (!url.port && !target.includes(':80') && !target.includes(':1984') && !target.includes(':3000')) {
-        url.port = '1984';
-      }
-      if (url.pathname.includes('/api/webrtc')) {
-        url.pathname = url.pathname.replace('/api/webrtc', '/api/stream.mjpeg');
-      } else if (url.pathname === '/' || url.pathname === '') {
-        url.pathname = '/api/stream.mjpeg';
-      }
-      if (!url.searchParams.get('src')) {
-        url.searchParams.set('src', 'camera');
-      }
-      return url.toString();
-    } catch {
-      return `http://${huskyIp}:1984/api/stream.mjpeg?src=camera`;
-    }
-  };
 
   const [connectionStatus, setConnectionStatus] = useState<
     'connected' | 'disconnected' | 'connecting'
@@ -414,9 +366,12 @@ export default function App() {
 
         if (isCorsOrMixed) {
           addSystemMessage(`⚠️ WebRTC 직접 연결이 브라우저 보안(CORS/Mixed Content)에 의해 차단되었습니다.`);
-          addSystemMessage(`🚀 자동으로 CORS 우회 모드(iframe 임베딩)로 전환합니다...`);
-          setStreamType('iframe');
-          // isStreaming은 true 유지 → iframe이 자동 렌더링됨
+          addSystemMessage(`🚀 기기 순정 스트리밍 뷰어를 새 창으로 자동 오픈합니다...`);
+          // HTTPS→HTTP iframe/fetch 모두 차단되므로, 기기 페이지를 새 창으로 직접 여는 것이 유일한 해법
+          const deviceViewerUrl = `http://${huskyIp}`;
+          window.open(deviceViewerUrl, 'husky_live_stream');
+          setStreamType('popup');
+          // isStreaming은 true 유지 → popup 안내 UI가 플레이어 영역에 렌더링됨
           setStreamError('');
         } else {
           // CORS/Mixed Content가 아닌 다른 오류인 경우에만 에러 표시
@@ -822,25 +777,42 @@ export default function App() {
               />
             )}
 
-            {isStreaming && streamType === 'iframe' && (
-              <iframe
-                src={getIframeUrl(directWebrtcUrl)}
-                className="w-full h-full border-0 bg-black rounded-2xl opacity-100"
-                allow="autoplay; encrypted-media"
-              />
-            )}
-
-            {isStreaming && streamType === 'mjpeg' && (
-              <img
-                src={getMjpegUrl(directWebrtcUrl)}
-                alt="HuskyLens Live Stream"
-                className="w-full h-full object-cover opacity-100"
-                onError={() => {
-                  console.error('MJPEG loading failed, fallback to iframe');
-                  setStreamType('iframe');
-                  addSystemMessage('⚠️ MJPEG 스트림 로드 실패로 iframe 뷰어로 자동 전환합니다.');
-                }}
-              />
+            {/* 🌟 팝업 모드: 기기 순정 뷰어가 새 창에서 열린 상태 → 플레이어 영역에 안내 UI */}
+            {isStreaming && streamType === 'popup' && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-[#0a0512] to-[#030208] z-10 px-6">
+                <div className="relative mb-4">
+                  <div className="absolute inset-0 rounded-full bg-emerald-500/20 blur-xl animate-pulse" />
+                  <div className="relative p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
+                    <Eye className="w-10 h-10 text-emerald-400" />
+                  </div>
+                </div>
+                <h3 className="text-lg font-bold text-white mb-1">실시간 영상이 새 창에서 재생 중입니다</h3>
+                <p className="text-sm text-slate-400 mb-5 text-center max-w-sm leading-relaxed">
+                  브라우저 보안 정책(HTTPS↔HTTP)으로 인해, 기기 순정 뷰어가<br/>
+                  <strong className="text-emerald-300">별도의 새 창</strong>에서 자동으로 열렸습니다.
+                </p>
+                <div className="flex flex-col gap-2.5 w-full max-w-xs">
+                  <a
+                    href={`http://${huskyIp}`}
+                    target="husky_live_stream"
+                    rel="noopener noreferrer"
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm tracking-wider shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all transform hover:scale-[1.01] active:scale-[0.99] text-center cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Eye className="w-4 h-4" />
+                    새 창 다시 열기 / 팝업이 차단된 경우
+                  </a>
+                  <button
+                    onClick={stopStreaming}
+                    className="w-full py-2.5 rounded-xl bg-white/[0.04] text-slate-400 border border-white/10 hover:bg-white/[0.08] text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    스트리밍 중단
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-600 mt-4 text-center leading-relaxed max-w-sm">
+                  💡 웹앱 플레이어에서 직접 영상을 보려면, 동일 Wi-Fi 내에서<br/>
+                  로컬 중계 서버(Broker) 모드를 사용해 주세요.
+                </p>
+              </div>
             )}
 
             {/* 스트리밍 대기 화면 */}
@@ -908,51 +880,23 @@ export default function App() {
                 <div className="w-full max-w-md space-y-3">
                   {connectionMode === 'direct' && (
                     <>
-                      {/* CORS 보안 장벽을 우회하는 극약 처방 3종 세트! */}
-                      <div className="space-y-2">
-                        <button
-                          onClick={() => {
-                            setStreamType('iframe');
-                            setStreamError('');
-                            setIsStreaming(true);
-                            addSystemMessage('🚀 CORS 우회: 기기 순정 뷰어를 웹앱 내부(iframe)에 임베딩하여 연동합니다.');
-                          }}
-                          className="block w-full py-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs tracking-wider shadow-[0_0_20px_rgba(139,92,246,0.3)] transition-all transform hover:scale-[1.01] active:scale-[0.99] text-center cursor-pointer"
-                        >
-                          🖥️ [CORS 우회 1순위] 웹앱 내부(iframe)로 화면 연동하기
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setStreamType('mjpeg');
-                            setStreamError('');
-                            setIsStreaming(true);
-                            addSystemMessage('🚀 CORS 우회: MJPEG 이미지 스트리밍 모드로 전환하여 연동합니다.');
-                          }}
-                          className="block w-full py-3 rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 hover:from-fuchsia-500 hover:to-pink-500 text-white font-bold text-xs tracking-wider shadow-[0_0_20px_rgba(217,70,239,0.3)] transition-all transform hover:scale-[1.01] active:scale-[0.99] text-center cursor-pointer"
-                        >
-                          🖼️ [CORS 우회 2순위] MJPEG 이미지 스트림으로 연동하기
-                        </button>
-
-                        <a
-                          href={`http://${huskyIp}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block w-full py-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/10 font-bold text-xs tracking-wider transition-all transform hover:scale-[1.01] active:scale-[0.99] text-center"
-                        >
-                          🚀 [대안] 기기 순정 스트리밍 화면 새 창으로 직접 열기
-                        </a>
-                      </div>
+                      <a
+                        href={`http://${huskyIp}`}
+                        target="husky_live_stream"
+                        rel="noopener noreferrer"
+                        className="block w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs tracking-wider shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all transform hover:scale-[1.01] active:scale-[0.99] text-center"
+                      >
+                        🚀 기기 순정 스트리밍 화면 새 창으로 열기
+                      </a>
 
                       <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-3.5 text-left text-[11px] leading-relaxed text-slate-300 space-y-2">
-                        <p className="font-semibold text-violet-300 flex items-center gap-1">
-                          <span>💡 왜 안 되나요? (안내 가이드를 완료한 경우)</span>
+                        <p className="font-semibold text-violet-300">💡 왜 웹앱 플레이어에서 직접 안 보이나요?</p>
+                        <p className="text-slate-400 leading-normal">
+                          HTTPS 배포 웹앱(Netlify)에서 HTTP 사설 기기로의 <strong>모든 통신</strong>이 브라우저 보안 정책에 의해 차단됩니다.
+                          이는 <strong>fetch, iframe, WebSocket</strong> 등 모든 방식에 해당합니다.
                         </p>
                         <p className="text-slate-400 leading-normal">
-                          크롬 사이트 설정에서 <strong>[안전하지 않은 콘텐츠] → '허용'</strong>을 올바르게 변경하셨음에도 송출이 되지 않는다면, 이는 기기 내장 WebRTC 서버의 <strong>CORS(교차 출처 자원 공유) 보안 제약</strong>으로 인해 브라우저의 직접 호출이 차단되었기 때문입니다.
-                        </p>
-                        <p className="text-slate-400 leading-normal">
-                          위의 <strong>[CORS 우회 1/2순위]</strong> 버튼을 클릭하시면 브라우저 보안 및 CORS 제약을 100% 완벽하게 우회하여, 별도 프로그램 설치 없이 웹앱 플레이어 영역 내부에서 실시간 영상을 즉각 확인하실 수 있습니다!
+                          웹앱 플레이어에서 직접 영상을 보려면 <strong className="text-violet-300">로컬 중계 서버(Broker) 모드</strong>를 사용해 주세요.
                         </p>
                       </div>
                     </>
