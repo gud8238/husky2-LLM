@@ -55,15 +55,11 @@ interface DetectedObject {
 const LS_MCP_URL  = 'husky_mcp_url';
 const LS_RTSP_URL = 'husky_rtsp_url';
 const LS_IP       = 'husky_ip';
+const LS_BROKER_URL = 'husky_broker_url';
 
 // 기본값
 const DEFAULT_MCP_URL  = 'http://10.135.209.36:3000/sse';
 const DEFAULT_RTSP_URL = 'rtsp://10.135.209.36:8554/live';
-
-// ─── 로컬 중계 서버 Base URL ─────────────────────────────
-// stream-broker.js가 프론트엔드(dist/)와 API를 동일 서버에서 제공하므로
-// 항상 상대 경로(빈 문자열)를 사용합니다.
-const BROKER_BASE = '';
 
 // ─── 메인 앱 ────────────────────────────────────────────────
 export default function App() {
@@ -74,9 +70,15 @@ export default function App() {
   const [rtspUrl, setRtspUrl] = useState<string>(
     () => localStorage.getItem(LS_RTSP_URL) || DEFAULT_RTSP_URL
   );
+  // 중계 서버 주소 상태 추가 (공백인 경우 로컬 구동 모드로 간주)
+  const [brokerUrl, setBrokerUrl] = useState<string>(
+    () => localStorage.getItem(LS_BROKER_URL) || ''
+  );
+
   // 설정 모달 내 임시 편집값
   const [draftMcpUrl, setDraftMcpUrl]   = useState<string>(mcpUrl);
   const [draftRtspUrl, setDraftRtspUrl] = useState<string>(rtspUrl);
+  const [draftBrokerUrl, setDraftBrokerUrl] = useState<string>(brokerUrl);
 
   // IP는 mcpUrl에서 자동 추출 (하위 호환)
   const huskyIp = (() => {
@@ -118,6 +120,10 @@ export default function App() {
     localStorage.setItem(LS_RTSP_URL, rtspUrl);
   }, [rtspUrl]);
 
+  useEffect(() => {
+    localStorage.setItem(LS_BROKER_URL, brokerUrl);
+  }, [brokerUrl]);
+
   // ── 채팅 스크롤 ──
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -148,14 +154,17 @@ export default function App() {
   // ─── 수동 연결 ─────────────────────────────────────────────
   // 1단계: TCP 레벨 경량 ping으로 기기 도달 가능 여부 확인
   // 2단계: 성공하면 MCP SSE 핸드셰이크 수행
-  const manualConnect = async (targetMcpUrl?: string) => {
+  const manualConnect = async (targetMcpUrl?: string, targetBrokerUrl?: string) => {
     const activeMcpUrl = targetMcpUrl !== undefined ? targetMcpUrl : mcpUrl;
+    const activeBroker = targetBrokerUrl !== undefined ? targetBrokerUrl : brokerUrl;
+    const brokerBase = activeBroker.trim().replace(/\/$/, '');
+
     setConnectionStatus('connecting');
     setConnectionError('');
     try {
       // 1단계: 경량 ping (TCP 도달 가능 여부만 체크, MCP 핸드셰이크 없음)
       const pingRes = await fetch(
-        `${BROKER_BASE}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+        `${brokerBase}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
       );
       const pingData = await pingRes.json();
 
@@ -171,7 +180,7 @@ export default function App() {
 
       // 2단계: MCP SSE 핸드셰이크 (이 단계에서 실제 세션을 수립)
       const connectRes = await fetch(
-        `${BROKER_BASE}/api/connect?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+        `${brokerBase}/api/connect?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
       );
       const connectData = await connectRes.json();
 
@@ -187,15 +196,16 @@ export default function App() {
       }
     } catch {
       setConnectionStatus('disconnected');
-      setConnectionError('로컬 중계 서버(stream-broker)에 접속할 수 없습니다.');
-      addSystemMessage('❌ 로컬 중계 서버(stream-broker)가 실행 중이지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행해 주세요.');
+      setConnectionError('중계 서버(stream-broker)에 접속할 수 없습니다.');
+      addSystemMessage(`❌ 중계 서버(${brokerBase || 'localhost'})가 실행 중이지 않거나 주소가 올바르지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행 중인지, 혹은 ngrok 등의 HTTPS 터널 주소가 입력되었는지 확인해 주세요.`);
     }
   };
 
   // ─── 연결 해제 ─────────────────────────────────────────────
   const manualDisconnect = async () => {
+    const brokerBase = brokerUrl.trim().replace(/\/$/, '');
     try {
-      await fetch(`${BROKER_BASE}/api/disconnect?mcpUrl=${encodeURIComponent(mcpUrl)}`);
+      await fetch(`${brokerBase}/api/disconnect?mcpUrl=${encodeURIComponent(mcpUrl)}`);
     } catch { /* 무시 */ }
     setConnectionStatus('disconnected');
     setConnectionError('');
@@ -207,11 +217,13 @@ export default function App() {
   const applySettings = () => {
     const trimmedMcp = draftMcpUrl.trim();
     const trimmedRtsp = draftRtspUrl.trim();
+    const trimmedBroker = draftBrokerUrl.trim();
     setMcpUrl(trimmedMcp);
     setRtspUrl(trimmedRtsp);
+    setBrokerUrl(trimmedBroker);
     setShowSettings(false);
     // 새 주소로 수동 연결 시도 (상태 비동기 지연을 방지하기 위해 새 주소 직접 전달)
-    manualConnect(trimmedMcp);
+    manualConnect(trimmedMcp, trimmedBroker);
   };
 
   // ─── 스트리밍 시작 ────────────────────────────────────────
@@ -221,11 +233,12 @@ export default function App() {
       return;
     }
     setIsStreaming(true);
+    const brokerBase = brokerUrl.trim().replace(/\/$/, '');
     try {
       addSystemMessage(`📹 RTSP 스트림 매핑 중: ${rtspUrl}`);
       // rtsp 파라미터로 커스텀 RTSP URL 전달
       const mapRes = await fetch(
-        `${BROKER_BASE}/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
+        `${brokerBase}/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
       );
       if (!mapRes.ok) throw new Error('RTSP 스트림 매핑 실패');
 
@@ -251,7 +264,7 @@ export default function App() {
       await pc.setLocalDescription(offer);
 
       const signalingRes = await fetch(
-        `${BROKER_BASE}/api/stream/webrtc`,
+        `${brokerBase}/api/stream/webrtc`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
@@ -324,10 +337,12 @@ export default function App() {
     setMessages((prev) => [...prev, userMsg]);
     if (!customText) setChatInput('');
 
+    const brokerBase = brokerUrl.trim().replace(/\/$/, '');
+
     // 실시간 인식 결과
     let visionContext = '';
     try {
-      const recResponse = await fetch(`${BROKER_BASE}/api/recognition`, {
+      const recResponse = await fetch(`${brokerBase}/api/recognition`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetIp: huskyIp, mcpUrl }),
@@ -379,7 +394,7 @@ export default function App() {
       const assistantText = result.assistantResponse || '명령을 처리했습니다.';
 
       if (result.functionName === 'changeHuskyLensMode' && result.args?.mode) {
-        const response = await fetch(`${BROKER_BASE}/api/control`, {
+        const response = await fetch(`${brokerBase}/api/control`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -489,6 +504,7 @@ export default function App() {
             onClick={() => {
               setDraftMcpUrl(mcpUrl);
               setDraftRtspUrl(rtspUrl);
+              setDraftBrokerUrl(brokerUrl);
               setShowSettings(true);
             }}
             className="text-xs font-semibold px-3 py-1.5 rounded-full border border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03] transition-all cursor-pointer flex items-center gap-1.5"
@@ -766,6 +782,27 @@ export default function App() {
 
                 {/* 모달 바디 */}
                 <div className="p-5 space-y-5">
+
+                  {/* 중계 서버 주소 입력 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-2">
+                      중계 서버 주소 (Broker Base URL)
+                    </label>
+                    <input
+                      type="text"
+                      value={draftBrokerUrl}
+                      onChange={(e) => setDraftBrokerUrl(e.target.value)}
+                      placeholder="공란(로컬 구동) 또는 https://xxxx.ngrok-free.app"
+                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                    />
+                    <div className="flex items-start gap-1.5 mt-2">
+                      <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                      <p className="text-[10px] text-slate-600 leading-relaxed">
+                        로컬 PC에서 실행할 때는 공란으로 비워두세요.<br />
+                        <span className="text-violet-400 font-semibold">Netlify 등 외부 배포 웹앱에서 사용 시:</span> 로컬 PC에서 <span className="text-slate-400 font-mono">ngrok http 9999</span>를 실행하여 발급된 <span className="text-violet-400 font-semibold font-mono">HTTPS</span> 터널 주소를 입력하세요.
+                      </p>
+                    </div>
+                  </div>
 
                   {/* MCP 주소 입력 */}
                   <div>
