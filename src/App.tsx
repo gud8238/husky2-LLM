@@ -419,19 +419,23 @@ export default function App() {
       }
 
       if (!success) {
-        setIsStreaming(false);
+        // 🚀 [자동 CORS 우회 Fallback] WebRTC SDP fetch가 실패(CORS/Mixed Content)하면
+        // 사용자 개입 없이 자동으로 iframe → MJPEG 순서로 전환하여 영상을 즉시 출력합니다.
         const errMsg = lastError?.message || '네트워크 오류';
-        
-        // TypeError: Failed to fetch는 대개 브라우저의 Mixed Content 차단에 기인함
-        if (lastError instanceof TypeError || errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
-          const blockMsg = '브라우저 혼합 콘텐츠(Mixed Content) 차단 감지됨';
-          setStreamError(blockMsg);
-          addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${blockMsg}`);
-          addSystemMessage(`💡 [Mixed Content 차단 해제 안내] HTTPS 배포 앱(Netlify)에서 HTTP 로컬 기기에 직접 통신하려면 브라우저 주소창 왼쪽 자물쇠 버튼을 클릭하여 '안전하지 않은 콘텐츠 허용'을 필히 활성화해야 합니다.`);
+        const isCorsOrMixed = lastError instanceof TypeError || errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError');
+
+        if (isCorsOrMixed) {
+          addSystemMessage(`⚠️ WebRTC 직접 연결이 브라우저 보안(CORS/Mixed Content)에 의해 차단되었습니다.`);
+          addSystemMessage(`🚀 자동으로 CORS 우회 모드(iframe 임베딩)로 전환합니다...`);
+          setStreamType('iframe');
+          // isStreaming은 true 유지 → iframe이 자동 렌더링됨
+          setStreamError('');
         } else {
+          // CORS/Mixed Content가 아닌 다른 오류인 경우에만 에러 표시
           setStreamError(`연결 실패: ${errMsg}`);
           addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${errMsg}`);
           addSystemMessage(`💡 동일한 Wi-Fi 환경에 연결되어 있는지, 기기 화면에 WebRTC가 정상적으로 켜져 있는지 확인해 주세요.`);
+          setIsStreaming(false);
         }
       }
     } else {
