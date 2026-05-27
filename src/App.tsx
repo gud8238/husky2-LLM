@@ -103,6 +103,7 @@ export default function App() {
   >('disconnected');
   // MCP 세션 연결 오류 메시지 (모달 인라인 표시용)
   const [connectionError, setConnectionError] = useState<string>('');
+  const [streamError, setStreamError]         = useState<string>('');
   const [chatInput, setChatInput]         = useState<string>('');
   const [messages, setMessages]           = useState<Message[]>([
     {
@@ -286,50 +287,98 @@ export default function App() {
       return;
     }
     setIsStreaming(true);
+    setStreamError('');
 
     if (connectionMode === 'direct') {
       // 🌟 [기기 직접 WebRTC 스트리밍 모드]
-      try {
-        addSystemMessage(`📹 기기에 직접 WebRTC SDP 협상 요청 중... (시그널링 주소: ${directWebrtcUrl})`);
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-        });
-        peerConnectionRef.current = pc;
+      // 포트 및 스트림명 자동 Fallback 스캔 목록 구성
+      const candidateUrls = [
+        directWebrtcUrl.trim(),
+        `http://${huskyIp}:1984/api/webrtc?src=camera`,
+        `http://${huskyIp}/api/webrtc?src=camera`,
+        `http://${huskyIp}:1984/api/webrtc?src=live`,
+        `http://${huskyIp}/api/webrtc?src=live`,
+        `http://${huskyIp}:1984/api/webrtc?src=huskylens`,
+        `http://${huskyIp}/api/webrtc?src=huskylens`
+      ];
 
-        pc.ontrack = (event) => {
-          if (videoRef.current) videoRef.current.srcObject = event.streams[0];
-        };
-        pc.oniceconnectionstatechange = () => {
-          if (
-            pc.iceConnectionState === 'failed' ||
-            pc.iceConnectionState === 'disconnected'
-          )
-            stopStreaming();
-        };
-        pc.addTransceiver('video', { direction: 'recvonly' });
+      // 중복 제거
+      const scanUrls = Array.from(new Set(candidateUrls));
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+      let lastError: any = null;
+      let success = false;
 
-        const signalingRes = await fetch(directWebrtcUrl.trim(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: offer.sdp,
-        });
+      for (let i = 0; i < scanUrls.length; i++) {
+        const targetUrl = scanUrls[i];
+        addSystemMessage(`📹 기기 직접 WebRTC 연결 시도 중 (${i+1}/${scanUrls.length}): ${targetUrl}`);
+        
+        try {
+          const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+          });
+          peerConnectionRef.current = pc;
 
-        if (!signalingRes.ok) {
-          throw new Error(`기기 WebRTC 시그널링 서버 응답 실패 (${signalingRes.status})`);
+          pc.ontrack = (event) => {
+            if (videoRef.current) videoRef.current.srcObject = event.streams[0];
+          };
+          pc.oniceconnectionstatechange = () => {
+            if (
+              pc.iceConnectionState === 'failed' ||
+              pc.iceConnectionState === 'disconnected'
+            )
+              stopStreaming();
+          };
+          pc.addTransceiver('video', { direction: 'recvonly' });
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          // 시그널링 API 호출
+          const signalingRes = await fetch(targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: offer.sdp,
+          });
+
+          if (!signalingRes.ok) {
+            throw new Error(`기기 응답 상태코드 오류 (${signalingRes.status})`);
+          }
+
+          const answerSdp = await signalingRes.text();
+          await pc.setRemoteDescription(
+            new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
+          );
+          
+          addSystemMessage(`📹 기기 직접 WebRTC 스트리밍 연결이 성공적으로 수립되었습니다! (${targetUrl})`);
+          success = true;
+          setStreamError('');
+          break; // 성공 시 스캔 중단
+        } catch (err: any) {
+          console.error(`Scan URL ${targetUrl} failed:`, err);
+          lastError = err;
+          // 실패 시 PeerConnection 정리 후 다음 후보 시도
+          if (peerConnectionRef.current) {
+            peerConnectionRef.current.close();
+            peerConnectionRef.current = null;
+          }
         }
+      }
 
-        const answerSdp = await signalingRes.text();
-        await pc.setRemoteDescription(
-          new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
-        );
-        addSystemMessage('📹 기기와 다이렉트 WebRTC 스트리밍 연결이 성공적으로 수립되었습니다!');
-      } catch (err: any) {
-        addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${err.message}`);
-        addSystemMessage(`💡 [보안 및 Wi-Fi 점검] 동일한 Wi-Fi 환경인지 다시 한번 확인해 주세요. HTTPS 배포 환경에서 비보안 HTTP 기기 통신 시 브라우저 차단을 예방하기 위해, 주소창 왼쪽 자물쇠 버튼을 클릭하여 '안전하지 않은 콘텐츠 허용'을 필히 활성화해야 합니다.`);
+      if (!success) {
         setIsStreaming(false);
+        const errMsg = lastError?.message || '네트워크 오류';
+        
+        // TypeError: Failed to fetch는 대개 브라우저의 Mixed Content 차단에 기인함
+        if (lastError instanceof TypeError || errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
+          const blockMsg = '브라우저 혼합 콘텐츠(Mixed Content) 차단 감지됨';
+          setStreamError(blockMsg);
+          addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${blockMsg}`);
+          addSystemMessage(`💡 [Mixed Content 차단 해제 안내] HTTPS 배포 앱(Netlify)에서 HTTP 로컬 기기에 직접 통신하려면 브라우저 주소창 왼쪽 자물쇠 버튼을 클릭하여 '안전하지 않은 콘텐츠 허용'을 필히 활성화해야 합니다.`);
+        } else {
+          setStreamError(`연결 실패: ${errMsg}`);
+          addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${errMsg}`);
+          addSystemMessage(`💡 동일한 Wi-Fi 환경에 연결되어 있는지, 기기 화면에 WebRTC가 정상적으로 켜져 있는지 확인해 주세요.`);
+        }
       }
     } else {
       // 🌟 [로컬 중계 서버 경유 RTSP -> WebRTC 스트리밍 모드]
@@ -393,7 +442,9 @@ export default function App() {
           new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
         );
         addSystemMessage('📹 무선 WebRTC 스트리밍이 연동되었습니다!');
+        setStreamError('');
       } catch (err: any) {
+        setStreamError(`중계 스트리밍 오류: ${err.message}`);
         addSystemMessage(`❌ 스트리밍 오류: ${err.message}`);
         setIsStreaming(false);
       }
@@ -772,6 +823,37 @@ export default function App() {
               <div className="absolute top-3 left-3 z-30 flex items-center gap-1.5 bg-black/60 backdrop-blur-sm border border-red-500/40 px-2.5 py-1 rounded-full">
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
                 <span className="text-xs font-bold text-red-400 tracking-wider">LIVE</span>
+              </div>
+            )}
+
+            {/* 🔴 스트리밍 에러 및 보안 경고 모달 오버레이 */}
+            {streamError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d091a]/95 backdrop-blur-md z-40 p-6 text-center">
+                <div className="p-3 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 mb-4">
+                  <AlertCircle className="w-8 h-8" />
+                </div>
+                <h4 className="text-base font-bold text-red-300 mb-2">스트리밍 송출 오류 발생</h4>
+                <p className="text-xs text-slate-400 max-w-sm mb-4 leading-relaxed font-mono">
+                  {streamError}
+                </p>
+                {connectionMode === 'direct' && (
+                  <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 max-w-md text-left text-xs leading-relaxed text-slate-300 space-y-2">
+                    <p className="font-semibold text-violet-300">💡 브라우저 혼합 콘텐츠(Mixed Content) 해제 안내</p>
+                    <p>배포된 웹앱(HTTPS)에서 로컬 기기(HTTP 사설 IP)로 보안 중계기 없이 다이렉트 통신 시 브라우저가 일차 차단합니다.</p>
+                    <div className="border-t border-white/[0.06] pt-2 mt-1 space-y-1 font-mono text-[11px] text-slate-400">
+                      <div>1. 크롬 주소창 왼쪽 <span className="text-violet-400 font-bold">자물쇠 또는 설정 아이콘</span> 클릭</div>
+                      <div>2. <span className="text-violet-400 font-bold">[사이트 설정]</span> 클릭</div>
+                      <div>3. <span className="text-violet-400 font-bold">[안전하지 않은 콘텐츠]</span> 항목 찾기</div>
+                      <div>4. \'차단(기본값)\' → <span className="text-emerald-400 font-bold">\'허용\'</span>으로 변경 후 페이지 새로고침!</div>
+                    </div>
+                  </div>
+                )}
+                <button
+                  onClick={() => { setStreamError(''); startStreaming(); }}
+                  className="mt-5 text-xs font-semibold px-4 py-2 bg-red-950/40 text-red-400 border border-red-800/40 hover:bg-red-900/30 rounded-xl transition-all cursor-pointer"
+                >
+                  다시 시도하기
+                </button>
               </div>
             )}
           </div>
