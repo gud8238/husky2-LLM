@@ -60,6 +60,11 @@ const LS_IP       = 'husky_ip';
 const DEFAULT_MCP_URL  = 'http://10.135.209.36:3000/sse';
 const DEFAULT_RTSP_URL = 'rtsp://10.135.209.36:8554/live';
 
+// ─── 로컬 중계 서버 Base URL ─────────────────────────────
+// 개발 모드: Vite 프록시가 /api/* → localhost:9999 로 중계하므로 빈 문자열(상대 경로)
+// 프로덕션(Netlify): 로컬 PC에서 stream-broker를 별도로 실행해야 하므로 직접 지정
+const BROKER_BASE = import.meta.env.DEV ? '' : 'http://localhost:9999';
+
 // ─── 메인 앱 ────────────────────────────────────────────────
 export default function App() {
   // ── 연결 설정 상태 ──
@@ -147,7 +152,7 @@ export default function App() {
     setConnectionStatus('connecting');
     try {
       const response = await fetch(
-        `http://localhost:9999/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+        `${BROKER_BASE}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
       );
       const data = await response.json();
       if (data.online) {
@@ -185,7 +190,7 @@ export default function App() {
       addSystemMessage(`📹 RTSP 스트림 매핑 중: ${rtspUrl}`);
       // rtsp 파라미터로 커스텀 RTSP URL 전달
       const mapRes = await fetch(
-        `http://localhost:9999/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
+        `${BROKER_BASE}/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
       );
       if (!mapRes.ok) throw new Error('RTSP 스트림 매핑 실패');
 
@@ -211,7 +216,7 @@ export default function App() {
       await pc.setLocalDescription(offer);
 
       const signalingRes = await fetch(
-        'http://localhost:9999/api/stream/webrtc',
+        `${BROKER_BASE}/api/stream/webrtc`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
@@ -287,7 +292,7 @@ export default function App() {
     // 실시간 인식 결과
     let visionContext = '';
     try {
-      const recResponse = await fetch('http://localhost:9999/api/recognition', {
+      const recResponse = await fetch(`${BROKER_BASE}/api/recognition`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetIp: huskyIp, mcpUrl }),
@@ -339,7 +344,7 @@ export default function App() {
       const assistantText = result.assistantResponse || '명령을 처리했습니다.';
 
       if (result.functionName === 'changeHuskyLensMode' && result.args?.mode) {
-        const response = await fetch('http://localhost:9999/api/control', {
+        const response = await fetch(`${BROKER_BASE}/api/control`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
