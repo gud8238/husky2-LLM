@@ -134,6 +134,28 @@ webrtc:
 
 // --- MCP SSE Server JSON-RPC Client Handshake & Session Management ---
 
+// 허스키렌즈2의 내장 MCP가 전달하는 endpoint가 절대 경로(localhost/127.0.0.1 등)일 경우, 
+// 실제 기기 Wi-Fi IP의 주소로 올바르게 변환해주는 유틸리티 함수
+function resolvePostEndpoint(postEndpoint, mcpBaseUrl) {
+  try {
+    const base = new URL(mcpBaseUrl);
+    const endpointUrl = new URL(postEndpoint, mcpBaseUrl);
+    
+    // 만약 절대경로로 기재되었으나 호스트가 로컬호스트 혹은 기기 IP가 아닌 경우 강제 교체
+    if (
+      endpointUrl.hostname === 'localhost' || 
+      endpointUrl.hostname === '127.0.0.1' || 
+      endpointUrl.hostname !== base.hostname
+    ) {
+      endpointUrl.protocol = base.protocol;
+      endpointUrl.host = base.host;
+    }
+    return endpointUrl;
+  } catch (e) {
+    return new URL(postEndpoint, mcpBaseUrl);
+  }
+}
+
 const ALGORITHM_MAP = {
   'face_recognition': 'Face Recognition',
   'object_recognition': 'Object Recognition',
@@ -293,7 +315,7 @@ class McpSessionManager {
   }
 
   sendInitializeByUrl(sessionKey, postEndpoint, mcpBaseUrl) {
-    const targetUrl = new URL(postEndpoint, mcpBaseUrl);
+    const targetUrl = resolvePostEndpoint(postEndpoint, mcpBaseUrl);
     const payload = JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'initialize',
       params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'HuskyVisionClient', version: '1.0.0' } }
@@ -309,7 +331,7 @@ class McpSessionManager {
 
   sendInitializedNotificationByUrl(sessionKey, postEndpoint, mcpBaseUrl) {
     return new Promise((resolve, reject) => {
-      const targetUrl = new URL(postEndpoint, mcpBaseUrl);
+      const targetUrl = resolvePostEndpoint(postEndpoint, mcpBaseUrl);
       const payload = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
       const req = http.request(targetUrl, {
         method: 'POST',
@@ -455,7 +477,7 @@ class McpSessionManager {
   }
 
   sendInitialize(ip, postEndpoint) {
-    const targetUrl = new URL(postEndpoint, `http://${ip}:3000`);
+    const targetUrl = resolvePostEndpoint(postEndpoint, `http://${ip}:3000`);
     const payload = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -486,7 +508,7 @@ class McpSessionManager {
 
   sendInitializedNotification(ip, postEndpoint) {
     return new Promise((resolve, reject) => {
-      const targetUrl = new URL(postEndpoint, `http://${ip}:3000`);
+      const targetUrl = resolvePostEndpoint(postEndpoint, `http://${ip}:3000`);
       const payload = JSON.stringify({
         jsonrpc: '2.0',
         method: 'notifications/initialized',
@@ -522,13 +544,8 @@ const mcpManager = new McpSessionManager();
 function callMcpTool(huskyIp, session, toolName, args) {
   return new Promise((resolve, reject) => {
     const postEndpoint = session.postEndpoint;
-    let targetUrl;
-    if (postEndpoint.startsWith('http://') || postEndpoint.startsWith('https://')) {
-      targetUrl = new URL(postEndpoint);
-    } else {
-      // Relative path mapping
-      targetUrl = new URL(postEndpoint, `http://${huskyIp}:3000`);
-    }
+    const mcpBaseUrl = session.mcpBaseUrl || `http://${huskyIp}:3000`;
+    const targetUrl = resolvePostEndpoint(postEndpoint, mcpBaseUrl);
 
     // Generate a unique numeric request ID
     const requestId = Math.floor(Math.random() * 100000000);

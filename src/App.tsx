@@ -142,33 +142,36 @@ export default function App() {
   }, []);
 
   // ─── 연결 확인 ────────────────────────────────────────────
-  const checkConnection = async () => {
+  const checkConnection = async (targetMcpUrl?: string) => {
+    const activeMcpUrl = targetMcpUrl !== undefined ? targetMcpUrl : mcpUrl;
     setConnectionStatus('connecting');
     try {
       const response = await fetch(
-        `http://localhost:9999/api/ping?mcpUrl=${encodeURIComponent(mcpUrl)}`
+        `http://localhost:9999/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
       );
       const data = await response.json();
       if (data.online) {
         setConnectionStatus('connected');
-        addSystemMessage(`🔌 MCP 연결 성공 (${mcpUrl})`);
+        addSystemMessage(`🔌 MCP 연결 성공 (${activeMcpUrl})`);
       } else {
         setConnectionStatus('disconnected');
         addSystemMessage(`❌ 연결 실패: ${data.error || 'MCP 서버에 응답이 없습니다.'}`);
       }
     } catch {
       setConnectionStatus('disconnected');
-      addSystemMessage('❌ 로컬 중계 서버(stream-broker)가 실행 중이지 않습니다.');
+      addSystemMessage('❌ 로컬 중계 서버(stream-broker)가 실행 중이지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행해 주세요.');
     }
   };
 
   // ─── 설정 저장 ────────────────────────────────────────────
   const applySettings = () => {
-    setMcpUrl(draftMcpUrl.trim());
-    setRtspUrl(draftRtspUrl.trim());
+    const trimmedMcp = draftMcpUrl.trim();
+    const trimmedRtsp = draftRtspUrl.trim();
+    setMcpUrl(trimmedMcp);
+    setRtspUrl(trimmedRtsp);
     setShowSettings(false);
-    // 새 주소로 즉시 재연결
-    setTimeout(() => checkConnection(), 100);
+    // 새 주소로 즉시 재연결 (상태 비동기 지연을 방지하기 위해 새 주소 직접 전달)
+    checkConnection(trimmedMcp);
   };
 
   // ─── 스트리밍 시작 ────────────────────────────────────────
@@ -410,7 +413,7 @@ export default function App() {
 
           {/* 연결 버튼 */}
           <button
-            onClick={checkConnection}
+            onClick={() => checkConnection()}
             className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
               connectionStatus === 'connected'
                 ? 'border-emerald-500/40 text-emerald-400 bg-emerald-950/30'
