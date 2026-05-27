@@ -240,25 +240,13 @@ export default function App() {
 
     if (activeMode === 'direct') {
       // 🌟 [기기 직접 연결 모드 (Direct WebRTC Mode)]
-      addSystemMessage(`📡 기기 직접 연결 시도... (연결 주소: ${activeMcpUrl})`);
-      try {
-        let testUrl = activeMcpUrl;
-        try {
-          const parsed = new URL(activeMcpUrl);
-          testUrl = `${parsed.protocol}//${parsed.host}`;
-        } catch {}
-
-        await fetch(testUrl, { method: 'HEAD', mode: 'no-cors' });
-        
-        addSystemMessage(`🔌 기기 직접 연결 확인 완료! (Wi-Fi 다이렉트 모드 활성화)`);
-        setConnectionStatus('connected');
-        setConnectionError('');
-      } catch (err: any) {
-        setConnectionStatus('disconnected');
-        setConnectionError('기기에 직접 접근할 수 없습니다. Wi-Fi 및 브라우저 보안 설정을 확인해 주세요.');
-        addSystemMessage(`❌ 기기 다이렉트 연결 실패: 동일한 Wi-Fi에 연결되어 있는지 확인해 주세요. (기기 IP: ${huskyIp})`);
-        addSystemMessage(`💡 [보안 안내] HTTPS 배포 앱(Netlify)에서 HTTP 로컬 기기에 직접 통신하려면 브라우저 주소창 왼쪽 자물쇠/설정 아이콘을 클릭하여 '안전하지 않은 콘텐츠 허용' (Mixed Content 허용)을 활성화해 주셔야 합니다.`);
-      }
+      // HTTPS(Netlify) → HTTP(기기 사설 IP) fetch는 브라우저 보안(Mixed Content)에 의해 차단되므로
+      // 연결 확인 핑을 보내지 않고, 사용자가 입력한 IP를 신뢰하여 즉시 connected 상태로 전환합니다.
+      // 실제 영상 통신은 startStreaming에서 iframe 자동 전환으로 처리됩니다.
+      addSystemMessage(`📡 기기 직접 연결 모드 활성화 (${activeMcpUrl})`);
+      addSystemMessage(`🔌 Wi-Fi 다이렉트 모드 준비 완료! 스트리밍 시작 버튼을 눌러 화면을 켜세요.`);
+      setConnectionStatus('connected');
+      setConnectionError('');
     } else {
       // 🌟 [로컬 중계 서버 경유 모드 (Broker Proxy Mode)]
       const brokerBase = activeBroker.trim().replace(/\/$/, '');
