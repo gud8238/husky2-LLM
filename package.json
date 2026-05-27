@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "start": "node scripts/stream-broker.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },

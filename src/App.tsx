@@ -61,9 +61,9 @@ const DEFAULT_MCP_URL  = 'http://10.135.209.36:3000/sse';
 const DEFAULT_RTSP_URL = 'rtsp://10.135.209.36:8554/live';
 
 // ─── 로컬 중계 서버 Base URL ─────────────────────────────
-// 개발 모드: Vite 프록시가 /api/* → localhost:9999 로 중계하므로 빈 문자열(상대 경로)
-// 프로덕션(Netlify): 로컬 PC에서 stream-broker를 별도로 실행해야 하므로 직접 지정
-const BROKER_BASE = import.meta.env.DEV ? '' : 'http://localhost:9999';
+// stream-broker.js가 프론트엔드(dist/)와 API를 동일 서버에서 제공하므로
+// 항상 상대 경로(빈 문자열)를 사용합니다.
+const BROKER_BASE = '';
 
 // ─── 메인 앱 ────────────────────────────────────────────────
 export default function App() {

@@ -11,7 +11,31 @@ import http from 'http';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { URL } from 'url';
+import { URL, fileURLToPath } from 'url';
+
+// ES Module에서 __dirname 대체
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 정적 파일 서빙을 위한 MIME 타입 매핑
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'application/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.svg':  'image/svg+xml',
+  '.ico':  'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2':'font/woff2',
+  '.ttf':  'font/ttf',
+  '.webp': 'image/webp',
+  '.webm': 'video/webm',
+  '.mp4':  'video/mp4',
+};
 
 const PORT = 9999;
 const GO2RTC_PORT = 1984;
@@ -304,13 +328,14 @@ class McpSessionManager {
         reject(err);
       });
 
+      // 15초 연결 타임아웃 (허스키렌즈2 부팅이 느릴 수 있음)
       setTimeout(() => {
         if (!session.initialized) {
           req.destroy();
           this.closeSession(sessionKey);
-          reject(new Error(`Timeout waiting for MCP Handshake on ${sseUrl}`));
+          reject(new Error(`MCP SSE 핸드셰이크 타임아웃 (15초 초과) — ${sseUrl} 주소와 기기 상태를 확인하세요.`));
         }
-      }, 6000);
+      }, 15000);
     });
   }
 
@@ -454,14 +479,14 @@ class McpSessionManager {
         reject(err);
       });
 
-      // 6s connection timeout
+      // 15초 연결 타임아웃 (허스키렌즈2 부팅이 느릴 수 있음)
       setTimeout(() => {
         if (!session.initialized) {
           req.destroy();
           this.closeSession(ip);
-          reject(new Error(`Timeout waiting for MCP Handshake on ${ip}`));
+          reject(new Error(`MCP SSE 핸드셰이크 타임아웃 (15초 초과) — ${ip}:3000 주소와 기기 상태를 확인하세요.`));
         }
-      }, 6000);
+      }, 15000);
     });
   }
 
@@ -850,14 +875,50 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Default 404
-  res.writeHead(404);
-  res.end();
+  // ─── 정적 파일 서빙 (dist/ 폴더) ─────────────────────────
+  // API 경로가 아닌 모든 요청은 빌드된 프론트엔드를 서빙
+  const distDir = path.resolve(__dirname, '..', 'dist');
+  let filePath = path.join(distDir, reqUrl.pathname === '/' ? 'index.html' : reqUrl.pathname);
+
+  // 보안: dist 폴더 밖으로 벗어나는 경로 차단
+  if (!filePath.startsWith(distDir)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
+  }
+
+  try {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': contentType });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      // SPA fallback: 파일이 없으면 index.html 반환 (React Router 등 지원)
+      const indexPath = path.join(distDir, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        fs.createReadStream(indexPath).pipe(res);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'dist/ 폴더에 빌드 파일이 없습니다. npm run build를 먼저 실행하세요.' }));
+      }
+    }
+  } catch (err) {
+    res.writeHead(500);
+    res.end(`Internal Server Error: ${err.message}`);
+  }
 });
 
 // Boot servers
 ensureGo2rtc().then(() => {
   server.listen(PORT, () => {
-    console.log(`🌐 Stream Proxy Server listening on http://localhost:${PORT}`);
+    console.log(``);
+    console.log(`🌐 ════════════════════════════════════════════════════`);
+    console.log(`🌐  HuskyVision 통합 서버 기동 완료!`);
+    console.log(`🌐  웹앱 접속: http://localhost:${PORT}`);
+    console.log(`🌐  API 서버: http://localhost:${PORT}/api/*`);
+    console.log(`🌐 ════════════════════════════════════════════════════`);
+    console.log(``);
   });
 });
