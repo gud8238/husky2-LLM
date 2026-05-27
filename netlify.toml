@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA 라우팅을 위한 리다이렉트 규칙
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

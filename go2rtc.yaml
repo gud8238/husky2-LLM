@@ -1,0 +1,10 @@
+
+api:
+  listen: ":1984"
+rtsp:
+  listen: ":8554"
+webrtc:
+  listen: ":8555"
+streams:
+  husky:
+    - rtsp://10.135.209.36:8554/live

@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-slate-50: #f8fafc;
+  --color-brand-slate-100: #f1f5f9;
+  --color-brand-slate-200: #e2e8f0;
+  --color-brand-slate-300: #cbd5e1;
+  --color-brand-slate-400: #94a3b8;
+  --color-brand-slate-500: #64748b;
+  --color-brand-slate-600: #475569;
+  --color-brand-slate-700: #334155;
+  --color-brand-slate-800: #1e293b;
+  --color-brand-slate-900: #0f172a;
+  --color-brand-slate-950: #030712;
+
+  /* Wope Premium Amethyst & Dark Theme Palette */
+  --color-wope-bg: #040508;
+  --color-wope-purple: #8b5cf6;
+  --color-wope-violet: #a78bfa;
+  --color-wope-dark-purple: #4c1d95;
+  --color-wope-card: rgba(10, 11, 18, 0.45);
+  --color-wope-border: rgba(255, 255, 255, 0.06);
+
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-pulse-fast: pulse 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-glow-pulse: wope-glow 2.5s ease-in-out infinite;
+  --animate-radar: wope-radar 2s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+  --animate-soundwave: wope-soundwave 1.5s ease-in-out infinite;
+
+  @keyframes wope-glow {
+    0%, 100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 15px rgba(139, 92, 246, 0.15); }
+    50% { transform: scale(1.01); opacity: 1; box-shadow: 0 0 30px rgba(139, 92, 246, 0.35); }
+  }
+
+  @keyframes wope-radar {
+    0% { transform: scale(0.95); opacity: 0.8; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+
+  @keyframes wope-soundwave {
+    0%, 100% { height: 4px; }
+    50% { height: 16px; }
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-wope-bg text-brand-slate-200 font-sans antialiased overflow-x-hidden relative;
+    /* Deep space soft amethyst glow backdrops */
+    background-image: 
+      radial-gradient(at 15% 15%, rgba(139, 92, 246, 0.08) 0px, transparent 45%),
+      radial-gradient(at 85% 25%, rgba(167, 139, 250, 0.06) 0px, transparent 40%),
+      radial-gradient(at 50% 85%, rgba(76, 29, 149, 0.04) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  /* Webkit custom scrollbars */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #040508;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-brand-slate-800 rounded-full hover:bg-wope-purple/40 transition-colors;
+  }
+}
+
+/* Bento Card - Signature Wope Premium Card Panel */
+.bento-card {
+  @apply bg-wope-card backdrop-blur-xl border border-wope-border rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.6)] transition-all duration-300;
+}
+
+.bento-card:hover {
+  @apply border-white/[0.1] shadow-[0_20px_50px_rgba(139,92,246,0.03),inset_0_1px_1px_rgba(255,255,255,0.02)];
+}
+
+/* Wope Glass Buttons (Micro-scale transitions) */
+.btn-wope-primary {
+  @apply relative py-2 px-4 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-wope-purple to-wope-violet hover:opacity-95 shadow-[0_4px_20px_rgba(139,92,246,0.25)] transition-all duration-200 active:scale-[0.97] outline-none cursor-pointer;
+}
+
+.btn-wope-secondary {
+  @apply py-2 px-4 rounded-xl text-xs font-semibold text-brand-slate-200 bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.1] hover:text-white transition-all duration-200 active:scale-[0.97] outline-none cursor-pointer;
+}
+
+.btn-wope-danger {
+  @apply py-2 px-4 rounded-xl text-xs font-semibold text-white bg-red-950/30 border border-red-800/40 hover:bg-red-900/30 hover:border-red-600/50 transition-all duration-200 active:scale-[0.97] outline-none cursor-pointer;
+}
+
+/* Indicators */
+.indicator-online-wope {
+  @apply bg-wope-purple shadow-[0_0_12px_#8b5cf6] animate-pulse-slow;
+}
+
+.indicator-offline-wope {
+  @apply bg-brand-slate-700 shadow-[0_0_6px_rgba(148,163,184,0.2)];
+}
+
+.indicator-active-wope {
+  @apply bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.8)] animate-pulse-fast;
+}
+
+/* Custom interactive vision items */
+.vision-mode-pill {
+  @apply flex flex-col p-3 rounded-xl border border-white/[0.04] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/[0.08] transition-all duration-200 cursor-pointer active:scale-[0.98];
+}
+
+.vision-mode-pill.active {
+  @apply border-wope-purple/40 bg-wope-purple/10 text-white shadow-[0_0_15px_rgba(139,92,246,0.06)];
+}
+
+/* Entry Animation */
+.fade-in-wope {
+  animation: fadeInWope 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeInWope {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
