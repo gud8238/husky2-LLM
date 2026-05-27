@@ -56,10 +56,13 @@ const LS_MCP_URL  = 'husky_mcp_url';
 const LS_RTSP_URL = 'husky_rtsp_url';
 const LS_IP       = 'husky_ip';
 const LS_BROKER_URL = 'husky_broker_url';
+const LS_CONN_MODE = 'husky_conn_mode';
+const LS_DIRECT_WEBRTC_URL = 'husky_direct_webrtc_url';
 
-// 기본값
-const DEFAULT_MCP_URL  = 'http://10.135.209.36:3000/sse';
-const DEFAULT_RTSP_URL = 'rtsp://10.135.209.36:8554/live';
+// 기본값 (사용자 최신 IP 10.161.176.236 기반 설정)
+const DEFAULT_MCP_URL  = 'http://10.161.176.236:3000/sse';
+const DEFAULT_RTSP_URL = 'rtsp://10.161.176.236:8554/live';
+const DEFAULT_DIRECT_WEBRTC_URL = 'http://10.161.176.236:1984/api/webrtc?src=camera';
 
 // ─── 메인 앱 ────────────────────────────────────────────────
 export default function App() {
@@ -74,11 +77,21 @@ export default function App() {
   const [brokerUrl, setBrokerUrl] = useState<string>(
     () => localStorage.getItem(LS_BROKER_URL) || ''
   );
+  // 연결 모드: 'broker' = 중계 서버 경유(ngrok/로컬), 'direct' = 기기 직접 WebRTC
+  const [connectionMode, setConnectionMode] = useState<'broker' | 'direct'>(
+    () => (localStorage.getItem(LS_CONN_MODE) as 'broker' | 'direct') || 'broker'
+  );
+  // 기기 직접 WebRTC 시그널링 URL
+  const [directWebrtcUrl, setDirectWebrtcUrl] = useState<string>(
+    () => localStorage.getItem(LS_DIRECT_WEBRTC_URL) || DEFAULT_DIRECT_WEBRTC_URL
+  );
 
   // 설정 모달 내 임시 편집값
   const [draftMcpUrl, setDraftMcpUrl]   = useState<string>(mcpUrl);
   const [draftRtspUrl, setDraftRtspUrl] = useState<string>(rtspUrl);
   const [draftBrokerUrl, setDraftBrokerUrl] = useState<string>(brokerUrl);
+  const [draftConnectionMode, setDraftConnectionMode] = useState<'broker' | 'direct'>(connectionMode);
+  const [draftDirectWebrtcUrl, setDraftDirectWebrtcUrl] = useState<string>(directWebrtcUrl);
 
   // IP는 mcpUrl에서 자동 추출 (하위 호환)
   const huskyIp = (() => {
@@ -124,6 +137,14 @@ export default function App() {
     localStorage.setItem(LS_BROKER_URL, brokerUrl);
   }, [brokerUrl]);
 
+  useEffect(() => {
+    localStorage.setItem(LS_CONN_MODE, connectionMode);
+  }, [connectionMode]);
+
+  useEffect(() => {
+    localStorage.setItem(LS_DIRECT_WEBRTC_URL, directWebrtcUrl);
+  }, [directWebrtcUrl]);
+
   // ── 채팅 스크롤 ──
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -149,64 +170,91 @@ export default function App() {
     }
   }, []);
 
-  // ── 자동 연결 없음: 사용자가 수동으로 연결 버튼을 클릭해야 합니다 ──
-
   // ─── 수동 연결 ─────────────────────────────────────────────
-  // 1단계: TCP 레벨 경량 ping으로 기기 도달 가능 여부 확인
-  // 2단계: 성공하면 MCP SSE 핸드셰이크 수행
-  const manualConnect = async (targetMcpUrl?: string, targetBrokerUrl?: string) => {
+  // connectionMode에 따라 중계 서버를 경유하거나 기기에 직접 연결을 수행합니다.
+  const manualConnect = async (
+    targetMcpUrl?: string,
+    targetBrokerUrl?: string,
+    targetMode?: 'broker' | 'direct'
+  ) => {
     const activeMcpUrl = targetMcpUrl !== undefined ? targetMcpUrl : mcpUrl;
     const activeBroker = targetBrokerUrl !== undefined ? targetBrokerUrl : brokerUrl;
-    const brokerBase = activeBroker.trim().replace(/\/$/, '');
+    const activeMode = targetMode !== undefined ? targetMode : connectionMode;
 
     setConnectionStatus('connecting');
     setConnectionError('');
-    try {
-      // 1단계: 경량 ping (TCP 도달 가능 여부만 체크, MCP 핸드셰이크 없음)
-      const pingRes = await fetch(
-        `${brokerBase}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
-      );
-      const pingData = await pingRes.json();
 
-      if (!pingData.reachable) {
-        setConnectionStatus('disconnected');
-        const errMsg = pingData.error || '기기에 도달할 수 없습니다. IP와 Wi-Fi를 확인하세요.';
-        setConnectionError(errMsg);
-        addSystemMessage(`❌ 연결 실패: ${errMsg}`);
-        return;
-      }
+    if (activeMode === 'direct') {
+      // 🌟 [기기 직접 연결 모드 (Direct WebRTC Mode)]
+      addSystemMessage(`📡 기기 직접 연결 시도... (연결 주소: ${activeMcpUrl})`);
+      try {
+        let testUrl = activeMcpUrl;
+        try {
+          const parsed = new URL(activeMcpUrl);
+          testUrl = `${parsed.protocol}//${parsed.host}`;
+        } catch {}
 
-      addSystemMessage(`📡 기기 도달 확인 완료. MCP 핸드셰이크 시작...`);
-
-      // 2단계: MCP SSE 핸드셰이크 (이 단계에서 실제 세션을 수립)
-      const connectRes = await fetch(
-        `${brokerBase}/api/connect?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
-      );
-      const connectData = await connectRes.json();
-
-      if (connectData.online) {
+        await fetch(testUrl, { method: 'HEAD', mode: 'no-cors' });
+        
+        addSystemMessage(`🔌 기기 직접 연결 확인 완료! (Wi-Fi 다이렉트 모드 활성화)`);
         setConnectionStatus('connected');
         setConnectionError('');
-        addSystemMessage(`🔌 MCP 연결 성공 (${activeMcpUrl})`);
-      } else {
+      } catch (err: any) {
         setConnectionStatus('disconnected');
-        const errMsg = connectData.error || 'MCP 핸드셰이크 실패';
-        setConnectionError(errMsg);
-        addSystemMessage(`❌ MCP 연결 실패: ${errMsg}`);
+        setConnectionError('기기에 직접 접근할 수 없습니다. Wi-Fi 및 브라우저 보안 설정을 확인해 주세요.');
+        addSystemMessage(`❌ 기기 다이렉트 연결 실패: 동일한 Wi-Fi에 연결되어 있는지 확인해 주세요. (기기 IP: ${huskyIp})`);
+        addSystemMessage(`💡 [보안 안내] HTTPS 배포 앱(Netlify)에서 HTTP 로컬 기기에 직접 통신하려면 브라우저 주소창 왼쪽 자물쇠/설정 아이콘을 클릭하여 '안전하지 않은 콘텐츠 허용' (Mixed Content 허용)을 활성화해 주셔야 합니다.`);
       }
-    } catch {
-      setConnectionStatus('disconnected');
-      setConnectionError('중계 서버(stream-broker)에 접속할 수 없습니다.');
-      addSystemMessage(`❌ 중계 서버(${brokerBase || 'localhost'})가 실행 중이지 않거나 주소가 올바르지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행 중인지, 혹은 ngrok 등의 HTTPS 터널 주소가 입력되었는지 확인해 주세요.`);
+    } else {
+      // 🌟 [로컬 중계 서버 경유 모드 (Broker Proxy Mode)]
+      const brokerBase = activeBroker.trim().replace(/\/$/, '');
+      try {
+        const pingRes = await fetch(
+          `${brokerBase}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+        );
+        const pingData = await pingRes.json();
+
+        if (!pingData.reachable) {
+          setConnectionStatus('disconnected');
+          const errMsg = pingData.error || '기기에 도달할 수 없습니다. IP와 Wi-Fi를 확인하세요.';
+          setConnectionError(errMsg);
+          addSystemMessage(`❌ 연결 실패: ${errMsg}`);
+          return;
+        }
+
+        addSystemMessage(`📡 기기 도달 확인 완료. MCP 핸드셰이크 시작...`);
+
+        const connectRes = await fetch(
+          `${brokerBase}/api/connect?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+        );
+        const connectData = await connectRes.json();
+
+        if (connectData.online) {
+          setConnectionStatus('connected');
+          setConnectionError('');
+          addSystemMessage(`🔌 MCP 연결 성공 (${activeMcpUrl})`);
+        } else {
+          setConnectionStatus('disconnected');
+          const errMsg = connectData.error || 'MCP 핸드셰이크 실패';
+          setConnectionError(errMsg);
+          addSystemMessage(`❌ MCP 연결 실패: ${errMsg}`);
+        }
+      } catch {
+        setConnectionStatus('disconnected');
+        setConnectionError('중계 서버(stream-broker)에 접속할 수 없습니다.');
+        addSystemMessage(`❌ 중계 서버(${brokerBase || 'localhost'})가 실행 중이지 않거나 주소가 올바르지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행 중인지, 혹은 ngrok 등의 HTTPS 터널 주소가 입력되었는지 확인해 주세요.`);
+      }
     }
   };
 
   // ─── 연결 해제 ─────────────────────────────────────────────
   const manualDisconnect = async () => {
-    const brokerBase = brokerUrl.trim().replace(/\/$/, '');
-    try {
-      await fetch(`${brokerBase}/api/disconnect?mcpUrl=${encodeURIComponent(mcpUrl)}`);
-    } catch { /* 무시 */ }
+    if (connectionMode === 'broker') {
+      const brokerBase = brokerUrl.trim().replace(/\/$/, '');
+      try {
+        await fetch(`${brokerBase}/api/disconnect?mcpUrl=${encodeURIComponent(mcpUrl)}`);
+      } catch { /* 무시 */ }
+    }
     setConnectionStatus('disconnected');
     setConnectionError('');
     if (isStreaming) stopStreaming();
@@ -218,12 +266,17 @@ export default function App() {
     const trimmedMcp = draftMcpUrl.trim();
     const trimmedRtsp = draftRtspUrl.trim();
     const trimmedBroker = draftBrokerUrl.trim();
+    const trimmedDirectUrl = draftDirectWebrtcUrl.trim();
+
     setMcpUrl(trimmedMcp);
     setRtspUrl(trimmedRtsp);
     setBrokerUrl(trimmedBroker);
+    setConnectionMode(draftConnectionMode);
+    setDirectWebrtcUrl(trimmedDirectUrl);
     setShowSettings(false);
-    // 새 주소로 수동 연결 시도 (상태 비동기 지연을 방지하기 위해 새 주소 직접 전달)
-    manualConnect(trimmedMcp, trimmedBroker);
+
+    // 새 주소로 수동 연결 시도
+    manualConnect(trimmedMcp, trimmedBroker, draftConnectionMode);
   };
 
   // ─── 스트리밍 시작 ────────────────────────────────────────
@@ -233,69 +286,117 @@ export default function App() {
       return;
     }
     setIsStreaming(true);
-    const brokerBase = brokerUrl.trim().replace(/\/$/, '');
-    try {
-      addSystemMessage(`📹 RTSP 스트림 매핑 중: ${rtspUrl}`);
-      // rtsp 파라미터로 커스텀 RTSP URL 전달
-      const mapRes = await fetch(
-        `${brokerBase}/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
-      );
-      if (!mapRes.ok) throw new Error('RTSP 스트림 매핑 실패');
 
-      addSystemMessage('📹 WebRTC SDP 협상 중...');
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-      });
-      peerConnectionRef.current = pc;
+    if (connectionMode === 'direct') {
+      // 🌟 [기기 직접 WebRTC 스트리밍 모드]
+      try {
+        addSystemMessage(`📹 기기에 직접 WebRTC SDP 협상 요청 중... (시그널링 주소: ${directWebrtcUrl})`);
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        });
+        peerConnectionRef.current = pc;
 
-      pc.ontrack = (event) => {
-        if (videoRef.current) videoRef.current.srcObject = event.streams[0];
-      };
-      pc.oniceconnectionstatechange = () => {
-        if (
-          pc.iceConnectionState === 'failed' ||
-          pc.iceConnectionState === 'disconnected'
-        )
-          stopStreaming();
-      };
-      pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.ontrack = (event) => {
+          if (videoRef.current) videoRef.current.srcObject = event.streams[0];
+        };
+        pc.oniceconnectionstatechange = () => {
+          if (
+            pc.iceConnectionState === 'failed' ||
+            pc.iceConnectionState === 'disconnected'
+          )
+            stopStreaming();
+        };
+        pc.addTransceiver('video', { direction: 'recvonly' });
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-      const signalingRes = await fetch(
-        `${brokerBase}/api/stream/webrtc`,
-        {
+        const signalingRes = await fetch(directWebrtcUrl.trim(), {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
           body: offer.sdp,
-        }
-      );
+        });
 
-      if (!signalingRes.ok) {
-        let errDetails = '';
-        try {
-          const errData = await signalingRes.json();
-          errDetails = errData.error || '';
-        } catch {
-          try { errDetails = await signalingRes.text(); } catch { /* empty */ }
+        if (!signalingRes.ok) {
+          throw new Error(`기기 WebRTC 시그널링 서버 응답 실패 (${signalingRes.status})`);
         }
-        if (errDetails.toLowerCase().includes('refused') || errDetails.includes('8554')) {
-          throw new Error(
-            '허스키렌즈2 기기에서 [Video Streaming] → RTSP Streaming을 ON으로 켜주세요.'
-          );
-        }
-        throw new Error(errDetails || `SDP 협상 실패 (${signalingRes.status})`);
+
+        const answerSdp = await signalingRes.text();
+        await pc.setRemoteDescription(
+          new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
+        );
+        addSystemMessage('📹 기기와 다이렉트 WebRTC 스트리밍 연결이 성공적으로 수립되었습니다!');
+      } catch (err: any) {
+        addSystemMessage(`❌ 기기 직접 스트리밍 실패: ${err.message}`);
+        addSystemMessage(`💡 [보안 및 Wi-Fi 점검] 동일한 Wi-Fi 환경인지 다시 한번 확인해 주세요. HTTPS 배포 환경에서 비보안 HTTP 기기 통신 시 브라우저 차단을 예방하기 위해, 주소창 왼쪽 자물쇠 버튼을 클릭하여 '안전하지 않은 콘텐츠 허용'을 필히 활성화해야 합니다.`);
+        setIsStreaming(false);
       }
+    } else {
+      // 🌟 [로컬 중계 서버 경유 RTSP -> WebRTC 스트리밍 모드]
+      const brokerBase = brokerUrl.trim().replace(/\/$/, '');
+      try {
+        addSystemMessage(`📹 RTSP 스트림 매핑 중: ${rtspUrl}`);
+        // rtsp 파라미터로 커스텀 RTSP URL 전달
+        const mapRes = await fetch(
+          `${brokerBase}/api/stream/start?ip=${encodeURIComponent(huskyIp)}&rtsp=${encodeURIComponent(rtspUrl)}`
+        );
+        if (!mapRes.ok) throw new Error('RTSP 스트림 매핑 실패');
 
-      const answerSdp = await signalingRes.text();
-      await pc.setRemoteDescription(
-        new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
-      );
-      addSystemMessage('📹 무선 WebRTC 스트리밍이 연동되었습니다!');
-    } catch (err: any) {
-      addSystemMessage(`❌ 스트리밍 오류: ${err.message}`);
-      setIsStreaming(false);
+        addSystemMessage('📹 WebRTC SDP 협상 중...');
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        });
+        peerConnectionRef.current = pc;
+
+        pc.ontrack = (event) => {
+          if (videoRef.current) videoRef.current.srcObject = event.streams[0];
+        };
+        pc.oniceconnectionstatechange = () => {
+          if (
+            pc.iceConnectionState === 'failed' ||
+            pc.iceConnectionState === 'disconnected'
+          )
+            stopStreaming();
+        };
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const signalingRes = await fetch(
+          `${brokerBase}/api/stream/webrtc`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: offer.sdp,
+          }
+        );
+
+        if (!signalingRes.ok) {
+          let errDetails = '';
+          try {
+            const errData = await signalingRes.json();
+            errDetails = errData.error || '';
+          } catch {
+            try { errDetails = await signalingRes.text(); } catch { /* empty */ }
+          }
+          if (errDetails.toLowerCase().includes('refused') || errDetails.includes('8554')) {
+            throw new Error(
+              '허스키렌즈2 기기에서 [Video Streaming] → RTSP Streaming을 ON으로 켜주세요.'
+            );
+          }
+          throw new Error(errDetails || `SDP 협상 실패 (${signalingRes.status})`);
+        }
+
+        const answerSdp = await signalingRes.text();
+        await pc.setRemoteDescription(
+          new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
+        );
+        addSystemMessage('📹 무선 WebRTC 스트리밍이 연동되었습니다!');
+      } catch (err: any) {
+        addSystemMessage(`❌ 스트리밍 오류: ${err.message}`);
+        setIsStreaming(false);
+      }
     }
   };
 
@@ -505,6 +606,8 @@ export default function App() {
               setDraftMcpUrl(mcpUrl);
               setDraftRtspUrl(rtspUrl);
               setDraftBrokerUrl(brokerUrl);
+              setDraftConnectionMode(connectionMode);
+              setDraftDirectWebrtcUrl(directWebrtcUrl);
               setShowSettings(true);
             }}
             className="text-xs font-semibold px-3 py-1.5 rounded-full border border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03] transition-all cursor-pointer flex items-center gap-1.5"
@@ -781,28 +884,107 @@ export default function App() {
                 </div>
 
                 {/* 모달 바디 */}
-                <div className="p-5 space-y-5">
+                <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto">
 
-                  {/* 중계 서버 주소 입력 */}
+                  {/* 연결 방식 셀렉터 탭 */}
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-2">
-                      중계 서버 주소 (Broker Base URL)
+                      연결 방식 (Connection Mode)
                     </label>
-                    <input
-                      type="text"
-                      value={draftBrokerUrl}
-                      onChange={(e) => setDraftBrokerUrl(e.target.value)}
-                      placeholder="공란(로컬 구동) 또는 https://xxxx.ngrok-free.app"
-                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
-                    />
-                    <div className="flex items-start gap-1.5 mt-2">
-                      <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-slate-600 leading-relaxed">
-                        로컬 PC에서 실행할 때는 공란으로 비워두세요.<br />
-                        <span className="text-violet-400 font-semibold">Netlify 등 외부 배포 웹앱에서 사용 시:</span> 로컬 PC에서 <span className="text-slate-400 font-mono">ngrok http 9999</span>를 실행하여 발급된 <span className="text-violet-400 font-semibold font-mono">HTTPS</span> 터널 주소를 입력하세요.
-                      </p>
+                    <div className="flex bg-white/[0.03] border border-white/[0.08] rounded-xl p-1 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setDraftConnectionMode('broker')}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          draftConnectionMode === 'broker'
+                            ? 'bg-violet-600 text-white shadow-sm'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        중계 서버 경유 (원격 추천)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDraftConnectionMode('direct')}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          draftConnectionMode === 'direct'
+                            ? 'bg-violet-600 text-white shadow-sm'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        기기 직접 연결 (동일 Wi-Fi)
+                      </button>
                     </div>
                   </div>
+
+                  {draftConnectionMode === 'broker' ? (
+                    <>
+                      {/* 중계 서버 주소 입력 */}
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-2">
+                          중계 서버 주소 (Broker Base URL)
+                        </label>
+                        <input
+                          type="text"
+                          value={draftBrokerUrl}
+                          onChange={(e) => setDraftBrokerUrl(e.target.value)}
+                          placeholder="공란(로컬 구동) 또는 https://xxxx.ngrok-free.app"
+                          className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                        />
+                        <div className="flex items-start gap-1.5 mt-2">
+                          <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                          <p className="text-[10px] text-slate-600 leading-relaxed">
+                            로컬 PC에서 실행할 때는 공란으로 비워두세요.<br />
+                            <span className="text-violet-400 font-semibold">Netlify 외부 원격 송출 시:</span> 로컬 PC에서 <span className="text-slate-400 font-mono">ngrok http 9999</span>를 가동한 뒤 생성된 <span className="text-violet-400 font-semibold font-mono">HTTPS</span> 터널 주소를 넣어주세요.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* RTSP 주소 입력 */}
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-2">
+                          RTSP 스트림 주소
+                        </label>
+                        <input
+                          type="text"
+                          value={draftRtspUrl}
+                          onChange={(e) => setDraftRtspUrl(e.target.value)}
+                          placeholder="rtsp://10.161.176.236:8554/live"
+                          className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                        />
+                        <div className="flex items-start gap-1.5 mt-2">
+                          <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                          <p className="text-[10px] text-slate-600 leading-relaxed">
+                            기기 메뉴 → Video Streaming → RTSP Streaming이 ON이어야 합니다.<br />
+                            기본 형식: <span className="text-slate-500 font-mono">rtsp://&lt;IP&gt;:8554/live</span>
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* 기기 직접 WebRTC 시그널링 URL 입력 */}
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-2">
+                          기기 WebRTC 시그널링 URL
+                        </label>
+                        <input
+                          type="text"
+                          value={draftDirectWebrtcUrl}
+                          onChange={(e) => setDraftDirectWebrtcUrl(e.target.value)}
+                          placeholder="http://10.161.176.236:1984/api/webrtc?src=camera"
+                          className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
+                        />
+                        <div className="flex items-start gap-1.5 mt-2">
+                          <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
+                          <p className="text-[10px] text-slate-600 leading-relaxed">
+                            <span className="text-violet-400 font-semibold">로컬 PC 중계기 없이 다이렉트 연동:</span> 기기 메뉴 → [Video Streaming] → [WebRTC Streaming]을 ON으로 켜고 표시되는 IP를 입력하세요.<br />
+                            기본 포트: <span className="text-slate-500 font-mono">1984</span>
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* MCP 주소 입력 */}
                   <div>
@@ -813,7 +995,7 @@ export default function App() {
                       type="text"
                       value={draftMcpUrl}
                       onChange={(e) => setDraftMcpUrl(e.target.value)}
-                      placeholder="http://192.168.x.x:3000/sse"
+                      placeholder="http://10.161.176.236:3000/sse"
                       className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
                     />
                     <div className="flex items-start gap-1.5 mt-2">
@@ -821,27 +1003,6 @@ export default function App() {
                       <p className="text-[10px] text-slate-600 leading-relaxed">
                         허스키렌즈2가 연결된 Wi-Fi IP와 포트를 입력하세요.<br />
                         기본 형식: <span className="text-slate-500 font-mono">http://&lt;IP&gt;:3000/sse</span>
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* RTSP 주소 입력 */}
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-2">
-                      RTSP 스트림 주소
-                    </label>
-                    <input
-                      type="text"
-                      value={draftRtspUrl}
-                      onChange={(e) => setDraftRtspUrl(e.target.value)}
-                      placeholder="rtsp://192.168.x.x:8554/live"
-                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-600 outline-none focus:border-violet-500/50 focus:bg-white/[0.06] transition-all"
-                    />
-                    <div className="flex items-start gap-1.5 mt-2">
-                      <Info className="w-3 h-3 text-slate-600 flex-shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-slate-600 leading-relaxed">
-                        기기 메뉴 → Video Streaming → RTSP Streaming이 ON이어야 합니다.<br />
-                        기본 형식: <span className="text-slate-500 font-mono">rtsp://&lt;IP&gt;:8554/live</span>
                       </p>
                     </div>
                   </div>
