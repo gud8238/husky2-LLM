@@ -86,6 +86,8 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState<
     'connected' | 'disconnected' | 'connecting'
   >('disconnected');
+  // MCP 세션 연결 오류 메시지 (모달 인라인 표시용)
+  const [connectionError, setConnectionError] = useState<string>('');
   const [chatInput, setChatInput]         = useState<string>('');
   const [messages, setMessages]           = useState<Message[]>([
     {
@@ -141,31 +143,64 @@ export default function App() {
     }
   }, []);
 
-  // ── 최초 연결 시도 ──
-  useEffect(() => {
-    checkConnection();
-  }, []);
+  // ── 자동 연결 없음: 사용자가 수동으로 연결 버튼을 클릭해야 합니다 ──
 
-  // ─── 연결 확인 ────────────────────────────────────────────
-  const checkConnection = async (targetMcpUrl?: string) => {
+  // ─── 수동 연결 ─────────────────────────────────────────────
+  // 1단계: TCP 레벨 경량 ping으로 기기 도달 가능 여부 확인
+  // 2단계: 성공하면 MCP SSE 핸드셰이크 수행
+  const manualConnect = async (targetMcpUrl?: string) => {
     const activeMcpUrl = targetMcpUrl !== undefined ? targetMcpUrl : mcpUrl;
     setConnectionStatus('connecting');
+    setConnectionError('');
     try {
-      const response = await fetch(
+      // 1단계: 경량 ping (TCP 도달 가능 여부만 체크, MCP 핸드셰이크 없음)
+      const pingRes = await fetch(
         `${BROKER_BASE}/api/ping?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
       );
-      const data = await response.json();
-      if (data.online) {
+      const pingData = await pingRes.json();
+
+      if (!pingData.reachable) {
+        setConnectionStatus('disconnected');
+        const errMsg = pingData.error || '기기에 도달할 수 없습니다. IP와 Wi-Fi를 확인하세요.';
+        setConnectionError(errMsg);
+        addSystemMessage(`❌ 연결 실패: ${errMsg}`);
+        return;
+      }
+
+      addSystemMessage(`📡 기기 도달 확인 완료. MCP 핸드셰이크 시작...`);
+
+      // 2단계: MCP SSE 핸드셰이크 (이 단계에서 실제 세션을 수립)
+      const connectRes = await fetch(
+        `${BROKER_BASE}/api/connect?mcpUrl=${encodeURIComponent(activeMcpUrl)}`
+      );
+      const connectData = await connectRes.json();
+
+      if (connectData.online) {
         setConnectionStatus('connected');
+        setConnectionError('');
         addSystemMessage(`🔌 MCP 연결 성공 (${activeMcpUrl})`);
       } else {
         setConnectionStatus('disconnected');
-        addSystemMessage(`❌ 연결 실패: ${data.error || 'MCP 서버에 응답이 없습니다.'}`);
+        const errMsg = connectData.error || 'MCP 핸드셰이크 실패';
+        setConnectionError(errMsg);
+        addSystemMessage(`❌ MCP 연결 실패: ${errMsg}`);
       }
     } catch {
       setConnectionStatus('disconnected');
+      setConnectionError('로컬 중계 서버(stream-broker)에 접속할 수 없습니다.');
       addSystemMessage('❌ 로컬 중계 서버(stream-broker)가 실행 중이지 않습니다. PC의 터미널에서 "node scripts/stream-broker.js"를 실행해 주세요.');
     }
+  };
+
+  // ─── 연결 해제 ─────────────────────────────────────────────
+  const manualDisconnect = async () => {
+    try {
+      await fetch(`${BROKER_BASE}/api/disconnect?mcpUrl=${encodeURIComponent(mcpUrl)}`);
+    } catch { /* 무시 */ }
+    setConnectionStatus('disconnected');
+    setConnectionError('');
+    if (isStreaming) stopStreaming();
+    addSystemMessage('🔌 연결을 해제했습니다.');
   };
 
   // ─── 설정 저장 ────────────────────────────────────────────
@@ -175,8 +210,8 @@ export default function App() {
     setMcpUrl(trimmedMcp);
     setRtspUrl(trimmedRtsp);
     setShowSettings(false);
-    // 새 주소로 즉시 재연결 (상태 비동기 지연을 방지하기 위해 새 주소 직접 전달)
-    checkConnection(trimmedMcp);
+    // 새 주소로 수동 연결 시도 (상태 비동기 지연을 방지하기 위해 새 주소 직접 전달)
+    manualConnect(trimmedMcp);
   };
 
   // ─── 스트리밍 시작 ────────────────────────────────────────
@@ -416,30 +451,38 @@ export default function App() {
             <span className={`text-[10px] font-semibold ${statusColor}`}>{statusLabel}</span>
           </div>
 
-          {/* 연결 버튼 */}
-          <button
-            onClick={() => checkConnection()}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
-              connectionStatus === 'connected'
-                ? 'border-emerald-500/40 text-emerald-400 bg-emerald-950/30'
-                : 'border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03]'
-            }`}
-          >
-            {connectionStatus === 'connecting' ? (
+          {/* 연결/해제 버튼 */}
+          {connectionStatus === 'connected' ? (
+            <button
+              onClick={manualDisconnect}
+              className="text-xs font-semibold px-3 py-1.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-950/30 transition-all cursor-pointer hover:border-red-500/40 hover:text-red-400 hover:bg-red-950/30"
+            >
               <span className="flex items-center gap-1.5">
-                <span className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin inline-block" />
-                연결중
+                <Wifi className="w-3 h-3" />연결 해제
               </span>
-            ) : connectionStatus === 'connected' ? (
-              <span className="flex items-center gap-1.5">
-                <Wifi className="w-3 h-3" />재연결
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5">
-                <WifiOff className="w-3 h-3" />연결
-              </span>
-            )}
-          </button>
+            </button>
+          ) : (
+            <button
+              onClick={() => manualConnect()}
+              disabled={connectionStatus === 'connecting'}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
+                connectionStatus === 'connecting'
+                  ? 'border-amber-500/40 text-amber-400 bg-amber-950/20'
+                  : 'border-white/10 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 bg-white/[0.03]'
+              }`}
+            >
+              {connectionStatus === 'connecting' ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin inline-block" />
+                  연결중...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <WifiOff className="w-3 h-3" />연결
+                </span>
+              )}
+            </button>
+          )}
 
           {/* ⚙️ 기기 설정 버튼 */}
           <button
@@ -770,22 +813,34 @@ export default function App() {
                   <div className={`flex items-center gap-2.5 p-3 rounded-xl border ${
                     connectionStatus === 'connected'
                       ? 'bg-emerald-950/30 border-emerald-800/40'
-                      : 'bg-white/[0.02] border-white/[0.06]'
+                      : connectionError
+                        ? 'bg-red-950/20 border-red-800/30'
+                        : 'bg-white/[0.02] border-white/[0.06]'
                   }`}>
                     {connectionStatus === 'connected' ? (
                       <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    ) : connectionError ? (
+                      <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
                     ) : (
                       <AlertCircle className="w-4 h-4 text-slate-500 flex-shrink-0" />
                     )}
                     <div>
                       <p className={`text-xs font-semibold ${
-                        connectionStatus === 'connected' ? 'text-emerald-300' : 'text-slate-400'
+                        connectionStatus === 'connected' ? 'text-emerald-300'
+                          : connectionError ? 'text-red-300'
+                          : connectionStatus === 'connecting' ? 'text-amber-300'
+                          : 'text-slate-400'
                       }`}>
-                        {connectionStatus === 'connected' ? '현재 연결됨' : connectionStatus === 'connecting' ? '연결 시도 중...' : '미연결 상태'}
+                        {connectionStatus === 'connected' ? '현재 연결됨'
+                          : connectionStatus === 'connecting' ? '연결 시도 중...'
+                          : connectionError ? '연결 실패'
+                          : '미연결 상태'}
                       </p>
-                      <p className="text-[10px] text-slate-600 font-mono truncate max-w-[300px]"
-                        title={mcpUrl}>
-                        {mcpUrl}
+                      <p className={`text-[10px] font-mono truncate max-w-[300px] ${
+                        connectionError ? 'text-red-400/70' : 'text-slate-600'
+                      }`}
+                        title={connectionError || mcpUrl}>
+                        {connectionError || mcpUrl}
                       </p>
                     </div>
                   </div>

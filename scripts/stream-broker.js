@@ -9,6 +9,7 @@
 import { spawn } from 'child_process';
 import http from 'http';
 import https from 'https';
+import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import { URL, fileURLToPath } from 'url';
@@ -772,9 +773,48 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Endpoint: Connectivity & Handshake Verification
+  // Endpoint: 경량 TCP ping (MCP 핸드셰이크 없이 기기 도달 가능 여부만 확인)
   if (reqUrl.pathname === '/api/ping') {
-    // mcpUrl 파라미터로 커스텀 MCP 주소 전체를 받거나, ip 파라미터로 IP만 받음
+    const mcpUrl = reqUrl.searchParams.get('mcpUrl');
+    let targetHost, targetPort;
+    try {
+      const parsed = new URL(mcpUrl);
+      targetHost = parsed.hostname;
+      targetPort = parseInt(parsed.port, 10) || 3000;
+    } catch {
+      const ipParam = reqUrl.searchParams.get('ip');
+      if (!ipParam) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'mcpUrl 또는 ip 파라미터가 필요합니다.' }));
+        return;
+      }
+      targetHost = ipParam;
+      targetPort = 3000;
+    }
+
+    // net.createConnection으로 TCP 레벨 도달 가능 여부만 확인 (3초 타임아웃)
+    const socket = net.createConnection({ host: targetHost, port: targetPort, timeout: 3000 });
+    
+    socket.on('connect', () => {
+      socket.destroy();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ reachable: true }));
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ reachable: false, error: `${targetHost}:${targetPort} 연결 타임아웃 (3초). 기기 전원 및 Wi-Fi를 확인하세요.` }));
+    });
+    socket.on('error', (err) => {
+      socket.destroy();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ reachable: false, error: `${targetHost}:${targetPort} 도달 불가: ${err.message}` }));
+    });
+    return;
+  }
+
+  // Endpoint: MCP SSE 핸드셰이크 (실제 세션 수립)
+  if (reqUrl.pathname === '/api/connect') {
     const mcpUrl = reqUrl.searchParams.get('mcpUrl');
     const huskyIp = mcpUrl ? (() => { try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; } })() : reqUrl.searchParams.get('ip');
     if (!huskyIp) {
@@ -784,7 +824,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      // mcpUrl이 주어진 경우 커스텀 SSE URL로 세션 연결
       const session = mcpUrl
         ? await mcpManager.getSessionByUrl(huskyIp, mcpUrl)
         : await mcpManager.getSession(huskyIp);
@@ -794,6 +833,18 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ online: false, error: err.message }));
     }
+    return;
+  }
+
+  // Endpoint: MCP 세션 해제
+  if (reqUrl.pathname === '/api/disconnect') {
+    const mcpUrl = reqUrl.searchParams.get('mcpUrl');
+    const huskyIp = mcpUrl ? (() => { try { return new URL(mcpUrl).hostname; } catch { return mcpUrl; } })() : reqUrl.searchParams.get('ip');
+    if (huskyIp) {
+      mcpManager.closeSession(huskyIp);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ disconnected: true }));
     return;
   }
 
